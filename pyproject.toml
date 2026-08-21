@@ -53,6 +53,10 @@ src = ["src", "tests"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
 
+[tool.ruff.lint.per-file-ignores]
+# Evidence tests intentionally assert Exception for frozen-model / duplicate-id cases.
+"tests/**" = ["B017"]
+
 [tool.black]
 target-version = ["py311"]
 line-length = 88
