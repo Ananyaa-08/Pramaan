@@ -1,0 +1,1 @@
+PYTHONPATH quirk on this machine: editable install .pth registers correctly but site.addsitedir() does not process it — root cause not fully isolated (likely pyenv-built interpreter site-module behavior). Workaround: PYTHONPATH=src required for ad-hoc scripts outside pytest.
