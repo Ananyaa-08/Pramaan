@@ -17,6 +17,7 @@ dependencies = [
     "structlog>=24.0",
     "tenacity>=8.0",
     "typer>=0.12",
+    "pyarrow>=14.0",
 ]
 
 [project.optional-dependencies]
@@ -36,6 +37,8 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+# Allow identical filenames across packages (e.g. test_base.py in multiple dirs).
+addopts = ["--import-mode=importlib"]
 
 [tool.coverage.run]
 source = ["auditor"]
