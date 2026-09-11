@@ -10,11 +10,13 @@ from auditor.connectors.base import CapabilityDescriptor, Connector
 
 class InMemoryConnector(Connector):
     """
-    Connector backed by an in-memory iterable of record dicts.
+    Connector backed by an in-memory sequence of record dicts.
 
     Used as the test double for profiler/analyzer work before real
-    adapters exist. Accepts a list or a generator so laziness of
-    list_records can be proven without materializing the source.
+    adapters exist. The supplied iterable (list or one-shot generator) is
+    materialized once at construction into a replayable stored sequence.
+    Each ``list_records()`` call returns a fresh lazy iterator over that
+    stored sequence and does not re-consume the original source.
     """
 
     def __init__(
@@ -25,8 +27,8 @@ class InMemoryConnector(Connector):
         capabilities: CapabilityDescriptor,
         id_field: str = "id",
     ) -> None:
-        # Keep the iterable as-is — do not materialize into a list here.
-        self._records = records
+        # Materialize once so generator sources remain independently replayable.
+        self._records = tuple(records)
         self._schema = schema
         self._source_metadata = source_metadata
         self._capabilities = capabilities

@@ -127,8 +127,8 @@ def test_list_records_returns_iterator_not_list() -> None:
     assert not isinstance(result, list)
 
 
-def test_list_records_is_lazy_with_production_counter() -> None:
-    """Consuming one item must not force materialization of the rest."""
+def test_generator_source_is_materialized_once_and_replayed_from_start() -> None:
+    """One-shot sources must be stored once and replayable across list_records calls."""
     produced = {"count": 0}
 
     def counting_source() -> Iterator[dict[str, Any]]:
@@ -143,17 +143,45 @@ def test_list_records_is_lazy_with_production_counter() -> None:
         capabilities=_default_capabilities(estimated_record_count=None),
     )
 
-    assert produced["count"] == 0
+    first_pass = list(connector.list_records())
+    second_pass = list(connector.list_records())
+
+    assert first_pass == FIXTURE_RECORDS
+    assert second_pass == FIXTURE_RECORDS
+    assert produced["count"] == len(FIXTURE_RECORDS)
+
+
+def test_list_records_returned_iterator_is_lazy_over_stored_sequence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """list_records must return a lazy iterator over the already-stored sequence."""
+    connector = InMemoryConnector(
+        records=[],
+        schema=FIXTURE_SCHEMA,
+        source_metadata=FIXTURE_SOURCE_METADATA,
+        capabilities=_default_capabilities(estimated_record_count=None),
+    )
+
+    pulled = {"count": 0}
+
+    class GuardedStoredSequence:
+        def __iter__(self) -> Iterator[dict[str, Any]]:
+            for record in FIXTURE_RECORDS:
+                pulled["count"] += 1
+                if pulled["count"] > 1:
+                    raise AssertionError(
+                        "list_records iterator pulled more than one stored record"
+                    )
+                yield record
+
+    monkeypatch.setattr(connector, "_records", GuardedStoredSequence())
+
     iterator = connector.list_records()
-    assert produced["count"] == 0
+    assert pulled["count"] == 0
 
     first = next(iterator)
-    assert first["id"] == "r1"
-    assert produced["count"] == 1
-
-    second = next(iterator)
-    assert second["id"] == "r2"
-    assert produced["count"] == 2
+    assert first == FIXTURE_RECORDS[0]
+    assert pulled["count"] == 1
 
 
 def test_list_records_respects_limit() -> None:

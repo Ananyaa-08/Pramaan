@@ -59,12 +59,10 @@ TRUSTED_STATUSES = (
     EvidenceStatus.DERIVED,
     EvidenceStatus.DOCUMENTED,
     EvidenceStatus.DISCREPANCY,
-)
-
-INFERRED_STATUSES = (
-    EvidenceStatus.INFERRED,
     EvidenceStatus.UNKNOWN,
 )
+
+INFERRED_STATUSES = (EvidenceStatus.INFERRED,)
 
 
 @pytest.fixture
@@ -99,12 +97,13 @@ def test_trusted_writer_accepts_allowed_statuses(
 
 
 @pytest.mark.parametrize("status", INFERRED_STATUSES)
-def test_trusted_writer_rejects_inferred_and_unknown(
+def test_trusted_writer_rejects_inferred_statuses(
     trusted: TrustedWriter, status: EvidenceStatus
 ) -> None:
-    confidence = 0.5 if status == EvidenceStatus.INFERRED else None
-    fact = make_fact(status=status, confidence=confidence)
-    with pytest.raises(PermissionError):
+    fact = make_fact(status=status, confidence=0.5)
+    with pytest.raises(
+        PermissionError, match=f"TrustedWriter cannot write status {status.value}"
+    ):
         trusted.write(fact)
 
 
@@ -117,8 +116,7 @@ def test_trusted_writer_rejects_inferred_and_unknown(
 def test_inferred_writer_accepts_allowed_statuses(
     inferred: InferredWriter, store: EvidenceStore, status: EvidenceStatus
 ) -> None:
-    confidence = 0.9 if status == EvidenceStatus.INFERRED else None
-    fact = make_fact(status=status, confidence=confidence, claim=f"{status.name}")
+    fact = make_fact(status=status, confidence=0.9, claim=f"{status.name}")
     inferred.write(fact)
     loaded = store.get_by_id(fact.id)
     assert loaded is not None
@@ -130,7 +128,9 @@ def test_inferred_writer_rejects_trusted_statuses(
     inferred: InferredWriter, status: EvidenceStatus
 ) -> None:
     fact = make_fact(status=status)
-    with pytest.raises(PermissionError):
+    with pytest.raises(
+        PermissionError, match=f"InferredWriter cannot write status {status.value}"
+    ):
         inferred.write(fact)
 
 
