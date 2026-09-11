@@ -66,9 +66,7 @@ def make_fact(
         "source": source if source is not None else _source(),
         "method": method if method is not None else _method(),
         "run_id": run_id if run_id is not None else uuid.uuid4(),
-        "parent_fact_ids": (
-            parent_fact_ids if parent_fact_ids is not None else []
-        ),
+        "parent_fact_ids": (parent_fact_ids if parent_fact_ids is not None else []),
         "confidence": confidence,
     }
     if fact_id is not None:
@@ -277,9 +275,7 @@ def test_duplicate_id_insert_does_not_corrupt_original(
     original = make_fact(fact_id=fact_id, claim="original claim", value={"v": 1})
     trusted.write(original)
 
-    duplicate = make_fact(
-        fact_id=fact_id, claim="corrupted claim", value={"v": 999}
-    )
+    duplicate = make_fact(fact_id=fact_id, claim="corrupted claim", value={"v": 999})
     with pytest.raises(DuplicateFactError):
         trusted.write(duplicate)
 

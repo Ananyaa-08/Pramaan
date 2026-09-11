@@ -53,7 +53,5 @@ class Fact(BaseModel):
             if not 0.0 <= self.confidence <= 1.0:
                 raise ValueError("confidence must be between 0.0 and 1.0 inclusive")
         elif self.confidence is not None:
-            raise ValueError(
-                "confidence must be None unless status is INFERRED"
-            )
+            raise ValueError("confidence must be None unless status is INFERRED")
         return self

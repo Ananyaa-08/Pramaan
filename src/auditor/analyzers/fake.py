@@ -40,8 +40,8 @@ class CountRecordsAnalyzer(Analyzer):
     ) -> list[Fact]:
         if not isinstance(writer, TrustedWriter):
             raise TypeError(
-              "CountRecordsAnalyzer.run requires a TrustedWriter; "
-               f"got {type(writer).__name__}"
+                "CountRecordsAnalyzer.run requires a TrustedWriter; "
+                f"got {type(writer).__name__}"
             )
 
         cap = self.get_capability()
@@ -78,9 +78,7 @@ class CountRecordsAnalyzer(Analyzer):
         return [fact]
 
     @staticmethod
-    def _count(
-        connector: Connector, record_ids: list[str] | None
-    ) -> int:
+    def _count(connector: Connector, record_ids: list[str] | None) -> int:
         if record_ids is None:
             return sum(1 for _ in connector.list_records())
 

@@ -157,9 +157,7 @@ def _assert_lazy_list_records(
     assert second["id"] != first["id"]
 
 
-def test_list_records_lazy_csv(
-    csv_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_list_records_lazy_csv(csv_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _assert_lazy_list_records(LocalFilesConnector(csv_path), monkeypatch)
 
 

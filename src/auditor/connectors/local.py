@@ -93,9 +93,7 @@ class LocalFilesConnector(Connector):
             "_sample_rows": len(sample),
         }
 
-    def list_records(
-        self, limit: int | None = None
-    ) -> Iterator[dict[str, Any]]:
+    def list_records(self, limit: int | None = None) -> Iterator[dict[str, Any]]:
         count = 0
         for record in self._iter_raw_records():
             if limit is not None and count >= limit:
@@ -150,9 +148,7 @@ class LocalFilesConnector(Connector):
             if reader.fieldnames is None:
                 raise EmptySourceError(f"CSV has no header: {self._path}")
             for row in reader:
-                yield {
-                    key: _normalize_csv_value(value) for key, value in row.items()
-                }
+                yield {key: _normalize_csv_value(value) for key, value in row.items()}
 
     def _iter_jsonl(self) -> Iterator[dict[str, Any]]:
         with self._open_text() as handle:
