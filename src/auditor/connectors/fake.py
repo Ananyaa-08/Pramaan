@@ -38,9 +38,7 @@ class InMemoryConnector(Connector):
     def get_schema(self) -> dict[str, Any]:
         return self._schema
 
-    def list_records(
-        self, limit: int | None = None
-    ) -> Iterator[dict[str, Any]]:
+    def list_records(self, limit: int | None = None) -> Iterator[dict[str, Any]]:
         count = 0
         for record in self._records:
             if limit is not None and count >= limit:

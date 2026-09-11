@@ -44,9 +44,7 @@ class Connector(ABC):
         """Field names/types discoverable without a full scan."""
 
     @abstractmethod
-    def list_records(
-        self, limit: int | None = None
-    ) -> Iterator[dict[str, Any]]:
+    def list_records(self, limit: int | None = None) -> Iterator[dict[str, Any]]:
         """
         Lazily stream records.
 

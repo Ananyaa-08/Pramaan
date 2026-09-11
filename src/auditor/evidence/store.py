@@ -16,9 +16,7 @@ def _validate_confidence_rule(fact: Fact) -> None:
     """Enforce the §3.1 confidence rule (also catches model_construct bypasses)."""
     if fact.status is EvidenceStatus.INFERRED:
         if fact.confidence is None:
-            raise ValueError(
-                "confidence is required when status is INFERRED (0.0–1.0)"
-            )
+            raise ValueError("confidence is required when status is INFERRED (0.0–1.0)")
         if not 0.0 <= fact.confidence <= 1.0:
             raise ValueError("confidence must be between 0.0 and 1.0 inclusive")
     elif fact.confidence is not None:
@@ -42,8 +40,7 @@ class EvidenceStore:
         self._ensure_schema()
 
     def _ensure_schema(self) -> None:
-        self._conn.execute(
-            """
+        self._conn.execute("""
             CREATE TABLE IF NOT EXISTS facts (
                 id TEXT PRIMARY KEY,
                 status TEXT NOT NULL,
@@ -56,8 +53,7 @@ class EvidenceStore:
                 confidence REAL,
                 created_at TEXT NOT NULL
             )
-            """
-        )
+            """)
         self._conn.commit()
 
     def _insert(self, fact: Fact) -> None:
