@@ -45,8 +45,43 @@ class DatasetProfiler:
         run_id: UUID,
     ) -> list[Fact]:
         source_metadata = deepcopy(connector.get_source_metadata())
-        capabilities = connector.get_capabilities().model_dump(mode="json")
+        capability_descriptor = connector.get_capabilities()
+        capabilities = capability_descriptor.model_dump(mode="json")
+        estimated_record_count = capability_descriptor.estimated_record_count
         schema = deepcopy(connector.get_schema())
+
+        if estimated_record_count is not None:
+            count_fact = Fact(
+                status=EvidenceStatus.OBSERVED,
+                claim="Connector-reported estimated record count",
+                value={
+                    "metric": "profiler.record_count.indexed",
+                    "value": estimated_record_count,
+                },
+                source=_source_provenance(source_metadata),
+                method=_method_provenance(),
+                run_id=run_id,
+                parent_fact_ids=[],
+                confidence=None,
+            )
+        else:
+            count_fact = Fact(
+                status=EvidenceStatus.UNKNOWN,
+                claim="Connector did not report an estimated record count",
+                value={
+                    "metric": "profiler.record_count.indexed",
+                    "value": None,
+                    "reason": "metadata_unavailable",
+                    "explanation": (
+                        "Connector did not provide an estimated record count."
+                    ),
+                },
+                source=_source_provenance(source_metadata),
+                method=_method_provenance(),
+                run_id=run_id,
+                parent_fact_ids=[],
+                confidence=None,
+            )
 
         facts = [
             Fact(
@@ -88,6 +123,7 @@ class DatasetProfiler:
                 parent_fact_ids=[],
                 confidence=None,
             ),
+            count_fact,
         ]
 
         for fact in facts:

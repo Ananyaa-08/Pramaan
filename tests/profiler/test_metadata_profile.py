@@ -1,4 +1,4 @@
-"""C0 metadata-only DatasetProfiler contract tests."""
+"""C0/C1 DatasetProfiler contract tests."""
 
 from __future__ import annotations
 
@@ -57,6 +57,17 @@ _METHOD_KEYS = {
 }
 
 
+def _build_capabilities(*, estimated_record_count: int | None) -> CapabilityDescriptor:
+    return CapabilityDescriptor(
+        can_stream=True,
+        can_random_access=False,
+        has_index_metadata=True,
+        media_is_referenced_not_present=False,
+        requires_auth=False,
+        estimated_record_count=estimated_record_count,
+    )
+
+
 class CountingMetadataConnector(Connector):
     """Minimal Connector ABC double that forbids record access."""
 
@@ -107,10 +118,14 @@ def writer(store: EvidenceStore) -> TrustedWriter:
     return TrustedWriter(store)
 
 
-def _build_connector(schema: dict[str, Any]) -> CountingMetadataConnector:
+def _build_connector(
+    schema: dict[str, Any],
+    *,
+    capabilities: CapabilityDescriptor | None = None,
+) -> CountingMetadataConnector:
     return CountingMetadataConnector(
         source_metadata=deepcopy(SOURCE_METADATA),
-        capabilities=CAPABILITIES,
+        capabilities=capabilities if capabilities is not None else CAPABILITIES,
         schema=deepcopy(schema),
     )
 
@@ -127,6 +142,22 @@ def _assert_method_provenance(method: dict[str, Any]) -> None:
     assert method["sampling_seed"] is None
 
 
+def _assert_shared_provenance(
+    fact: Any, *, source_metadata: dict[str, Any], run_id: Any
+) -> None:
+    assert fact.run_id == run_id
+    assert fact.confidence is None
+    assert fact.parent_fact_ids == []
+    assert fact.source == {
+        "source_uri": source_metadata["source_uri"],
+        "revision": source_metadata["revision"],
+        "file_path": None,
+        "field": None,
+        "record_id": None,
+    }
+    _assert_method_provenance(fact.method)
+
+
 def test_profile_writes_source_capabilities_and_schema_facts(
     store: EvidenceStore, writer: TrustedWriter
 ) -> None:
@@ -138,15 +169,16 @@ def test_profile_writes_source_capabilities_and_schema_facts(
 
     facts = DatasetProfiler().profile(connector, writer, run_id)
 
-    assert len(facts) == 3
+    assert len(facts) == 4
     assert [fact.value["metric"] for fact in facts] == [
         "profiler.source_metadata",
         "profiler.capabilities",
         "profiler.schema",
+        "profiler.record_count.indexed",
     ]
     assert all(fact.status is EvidenceStatus.OBSERVED for fact in facts)
 
-    source_fact, capabilities_fact, schema_fact = facts
+    source_fact, capabilities_fact, schema_fact, count_fact = facts
     assert source_fact.value == {
         "metric": "profiler.source_metadata",
         "value": original_metadata,
@@ -167,20 +199,20 @@ def test_profile_writes_source_capabilities_and_schema_facts(
         "metric": "profiler.schema",
         "value": original_schema,
     }
+    assert count_fact.value == {
+        "metric": "profiler.record_count.indexed",
+        "value": 3,
+    }
+    assert count_fact.claim == "Connector-reported estimated record count"
 
     assert connector._source_metadata == original_metadata
     assert connector._schema == original_schema
 
     for fact in facts:
         assert isinstance(fact.claim, str) and fact.claim.strip()
-        assert fact.source == {
-            "source_uri": original_metadata["source_uri"],
-            "revision": original_metadata["revision"],
-            "file_path": None,
-            "field": None,
-            "record_id": None,
-        }
-        _assert_method_provenance(fact.method)
+        _assert_shared_provenance(
+            fact, source_metadata=original_metadata, run_id=run_id
+        )
 
     assert "connector-reported schema" in schema_fact.claim.lower()
 
@@ -228,12 +260,73 @@ def test_profile_uses_caller_run_id_and_returns_written_facts(
 
     facts = DatasetProfiler().profile(connector, writer, run_id)
 
-    assert len(facts) == 3
-    assert len({fact.id for fact in facts}) == 3
+    assert len(facts) == 4
+    assert len({fact.id for fact in facts}) == 4
     assert all(fact.run_id == run_id for fact in facts)
     assert all(fact.confidence is None for fact in facts)
     assert all(fact.parent_fact_ids == [] for fact in facts)
 
     stored = store.get_by_run(run_id)
-    assert len(stored) == 3
+    assert len(stored) == 4
     assert {fact.id for fact in stored} == {fact.id for fact in facts}
+
+
+def test_profile_indexed_record_count_zero_is_observed(
+    store: EvidenceStore, writer: TrustedWriter
+) -> None:
+    connector = _build_connector(
+        FLAT_SCHEMA,
+        capabilities=_build_capabilities(estimated_record_count=0),
+    )
+    original_metadata = deepcopy(connector._source_metadata)
+    run_id = uuid4()
+
+    facts = DatasetProfiler().profile(connector, writer, run_id)
+
+    count_fact = facts[3]
+    assert count_fact.status is EvidenceStatus.OBSERVED
+    assert count_fact.claim == "Connector-reported estimated record count"
+    assert count_fact.value == {
+        "metric": "profiler.record_count.indexed",
+        "value": 0,
+    }
+    assert count_fact.value["value"] == 0
+    assert count_fact.value["value"] is not None
+    _assert_shared_provenance(
+        count_fact, source_metadata=original_metadata, run_id=run_id
+    )
+    assert connector.source_metadata_calls == 1
+    assert connector.capabilities_calls == 1
+    assert connector.schema_calls == 1
+
+
+def test_profile_indexed_record_count_none_is_unknown(
+    store: EvidenceStore, writer: TrustedWriter
+) -> None:
+    connector = _build_connector(
+        FLAT_SCHEMA,
+        capabilities=_build_capabilities(estimated_record_count=None),
+    )
+    original_metadata = deepcopy(connector._source_metadata)
+    run_id = uuid4()
+
+    facts = DatasetProfiler().profile(connector, writer, run_id)
+
+    count_fact = facts[3]
+    assert count_fact.status is EvidenceStatus.UNKNOWN
+    assert count_fact.claim == "Connector did not report an estimated record count"
+    assert count_fact.value == {
+        "metric": "profiler.record_count.indexed",
+        "value": None,
+        "reason": "metadata_unavailable",
+        "explanation": "Connector did not provide an estimated record count.",
+    }
+    _assert_shared_provenance(
+        count_fact, source_metadata=original_metadata, run_id=run_id
+    )
+
+    stored = store.get_by_run(run_id)
+    assert count_fact.id in {fact.id for fact in stored}
+    assert connector.source_metadata_calls == 1
+    assert connector.capabilities_calls == 1
+    assert connector.schema_calls == 1
