@@ -35,6 +35,15 @@ def _method_provenance() -> dict[str, Any]:
     }
 
 
+def _exact_count_method_provenance(scan_max_records: int) -> dict[str, Any]:
+    method = _method_provenance()
+    method["parameters"] = {
+        "operation": "exact_record_count",
+        "scan_max_records": scan_max_records,
+    }
+    return method
+
+
 class DatasetProfiler:
     """Metadata-first deterministic profiler over the frozen Connector interface."""
 
@@ -43,7 +52,12 @@ class DatasetProfiler:
         connector: Connector,
         writer: TrustedWriter,
         run_id: UUID,
+        *,
+        scan_max_records: int = 0,
     ) -> list[Fact]:
+        if scan_max_records < 0:
+            raise ValueError("scan_max_records must be non-negative")
+
         source_metadata = deepcopy(connector.get_source_metadata())
         capability_descriptor = connector.get_capabilities()
         capabilities = capability_descriptor.model_dump(mode="json")
@@ -78,6 +92,49 @@ class DatasetProfiler:
                 },
                 source=_source_provenance(source_metadata),
                 method=_method_provenance(),
+                run_id=run_id,
+                parent_fact_ids=[],
+                confidence=None,
+            )
+
+        scan_authorized = (
+            scan_max_records > 0
+            and capability_descriptor.has_index_metadata
+            and not capability_descriptor.media_is_referenced_not_present
+            and estimated_record_count is not None
+            and estimated_record_count <= scan_max_records
+        )
+
+        if scan_authorized:
+            exact_record_count = sum(1 for _ in connector.list_records())
+            exact_fact = Fact(
+                status=EvidenceStatus.COMPUTED,
+                claim="Exact record count computed from an authorized record scan",
+                value={
+                    "metric": "profiler.record_count.exact",
+                    "value": exact_record_count,
+                },
+                source=_source_provenance(source_metadata),
+                method=_exact_count_method_provenance(scan_max_records),
+                run_id=run_id,
+                parent_fact_ids=[],
+                confidence=None,
+            )
+        else:
+            exact_fact = Fact(
+                status=EvidenceStatus.UNKNOWN,
+                claim="Exact record count was not computed",
+                value={
+                    "metric": "profiler.record_count.exact",
+                    "value": None,
+                    "reason": "scan_not_authorized",
+                    "explanation": (
+                        "Exact record count was not computed because "
+                        "a full record scan was not authorized."
+                    ),
+                },
+                source=_source_provenance(source_metadata),
+                method=_exact_count_method_provenance(scan_max_records),
                 run_id=run_id,
                 parent_fact_ids=[],
                 confidence=None,
@@ -124,6 +181,7 @@ class DatasetProfiler:
                 confidence=None,
             ),
             count_fact,
+            exact_fact,
         ]
 
         for fact in facts:
