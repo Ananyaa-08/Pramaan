@@ -1,4 +1,4 @@
-"""C0/C1/C2/C3 DatasetProfiler contract tests."""
+"""C0/C1/C2/C3/C4 DatasetProfiler contract tests."""
 
 from __future__ import annotations
 
@@ -87,15 +87,41 @@ _METHOD_KEYS = {
     "sampling_seed",
 }
 
-_UNKNOWN_EXACT_VALUE = {
-    "metric": "profiler.record_count.exact",
-    "value": None,
-    "reason": "scan_not_authorized",
-    "explanation": (
-        "Exact record count was not computed because "
-        "a full record scan was not authorized."
-    ),
-}
+_ESTIMATED_WORK_EMPTY: list[dict[str, Any]] = []
+
+_ESTIMATED_WORK_RECORDS_TO_SCAN_NONE = [
+    {"unit": "RECORDS_TO_SCAN", "magnitude": None},
+]
+
+_ESTIMATED_WORK_FILES_TO_OPEN_NONE = [
+    {"unit": "FILES_TO_OPEN", "magnitude": None},
+]
+
+
+def _unknown_indexed_value() -> dict[str, Any]:
+    return {
+        "metric": "profiler.record_count.indexed",
+        "value": None,
+        "reason": "metadata_unavailable",
+        "explanation": "Connector did not provide an estimated record count.",
+        "estimated_work": _ESTIMATED_WORK_RECORDS_TO_SCAN_NONE,
+    }
+
+
+def _unknown_exact_value(*, estimated_record_count: int | None) -> dict[str, Any]:
+    return {
+        "metric": "profiler.record_count.exact",
+        "value": None,
+        "reason": "scan_not_authorized",
+        "explanation": (
+            "Exact record count was not computed because "
+            "a full record scan was not authorized."
+        ),
+        "estimated_work": [
+            {"unit": "RECORDS_TO_SCAN", "magnitude": estimated_record_count},
+        ],
+    }
+
 
 _SCHEMA_INCOMPLETE_EXPLANATION = (
     "Connector schema is incomplete or unavailable for modality classification."
@@ -299,6 +325,10 @@ def _assert_modality_fact_common(
     _assert_modality_method(fact.method)
 
 
+def _assert_no_estimated_work(fact: Fact) -> None:
+    assert "estimated_work" not in fact.value
+
+
 def _assert_metric_order(facts: list[Fact]) -> None:
     assert [fact.value["metric"] for fact in facts] == [
         "profiler.source_metadata",
@@ -361,7 +391,7 @@ def test_profile_writes_source_capabilities_and_schema_facts(
     }
     assert count_fact.claim == "Connector-reported estimated record count"
     assert exact_fact.claim == "Exact record count was not computed"
-    assert exact_fact.value == _UNKNOWN_EXACT_VALUE
+    assert exact_fact.value == _unknown_exact_value(estimated_record_count=3)
     assert modality_fact.claim == (
         "Dataset modality classified as tabular from connector schema types"
     )
@@ -379,9 +409,11 @@ def test_profile_writes_source_capabilities_and_schema_facts(
 
     for fact in facts[:4]:
         assert isinstance(fact.claim, str) and fact.claim.strip()
+        _assert_no_estimated_work(fact)
         _assert_shared_provenance(
             fact, source_metadata=original_metadata, run_id=run_id
         )
+    _assert_no_estimated_work(modality_fact)
     _assert_exact_fact_common(
         exact_fact,
         source_metadata=original_metadata,
@@ -476,6 +508,7 @@ def test_profile_indexed_record_count_zero_is_observed(
     }
     assert count_fact.value["value"] == 0
     assert count_fact.value["value"] is not None
+    _assert_no_estimated_work(count_fact)
     _assert_shared_provenance(
         count_fact, source_metadata=original_metadata, run_id=run_id
     )
@@ -500,12 +533,7 @@ def test_profile_indexed_record_count_none_is_unknown(
     count_fact = facts[3]
     assert count_fact.status is EvidenceStatus.UNKNOWN
     assert count_fact.claim == "Connector did not report an estimated record count"
-    assert count_fact.value == {
-        "metric": "profiler.record_count.indexed",
-        "value": None,
-        "reason": "metadata_unavailable",
-        "explanation": "Connector did not provide an estimated record count.",
-    }
+    assert count_fact.value == _unknown_indexed_value()
     _assert_shared_provenance(
         count_fact, source_metadata=original_metadata, run_id=run_id
     )
@@ -549,6 +577,7 @@ def test_profile_exact_count_uses_authorized_scan_yield(
         "metric": "profiler.record_count.exact",
         "value": 3,
     }
+    _assert_no_estimated_work(exact_fact)
     _assert_exact_fact_common(
         exact_fact,
         source_metadata=original_metadata,
@@ -581,7 +610,7 @@ def test_profile_exact_count_disabled_when_scan_max_records_zero(
     exact_fact = facts[4]
     assert exact_fact.status is EvidenceStatus.UNKNOWN
     assert exact_fact.claim == "Exact record count was not computed"
-    assert exact_fact.value == _UNKNOWN_EXACT_VALUE
+    assert exact_fact.value == _unknown_exact_value(estimated_record_count=0)
     _assert_exact_fact_common(
         exact_fact,
         source_metadata=original_metadata,
@@ -644,7 +673,9 @@ def test_profile_exact_count_rejected_when_scan_gate_fails(
     exact_fact = facts[4]
     assert exact_fact.status is EvidenceStatus.UNKNOWN
     assert exact_fact.claim == "Exact record count was not computed"
-    assert exact_fact.value == _UNKNOWN_EXACT_VALUE
+    assert exact_fact.value == _unknown_exact_value(
+        estimated_record_count=capabilities.estimated_record_count
+    )
     _assert_exact_fact_common(
         exact_fact,
         source_metadata=original_metadata,
@@ -1018,6 +1049,7 @@ def test_profile_modality_incomplete_schema_is_unknown(
         "schema_inference": schema.get("_inference"),
         "reason": "schema_incomplete",
         "explanation": _SCHEMA_INCOMPLETE_EXPLANATION,
+        "estimated_work": _ESTIMATED_WORK_EMPTY,
     }
     _assert_modality_fact_common(
         modality_fact,
@@ -1055,6 +1087,7 @@ def test_profile_modality_unsupported_types_are_ambiguous(
         "schema_inference": "full",
         "reason": "modality_ambiguous",
         "explanation": _MODALITY_AMBIGUOUS_EXPLANATION,
+        "estimated_work": _ESTIMATED_WORK_EMPTY,
     }
     _assert_modality_fact_common(
         modality_fact,
@@ -1094,6 +1127,7 @@ def test_profile_modality_does_not_match_partial_type_tokens(
         "schema_inference": "full",
         "reason": "modality_ambiguous",
         "explanation": _MODALITY_AMBIGUOUS_EXPLANATION,
+        "estimated_work": _ESTIMATED_WORK_EMPTY,
     }
     _assert_modality_fact_common(
         modality_fact,
@@ -1129,6 +1163,7 @@ def test_profile_modality_media_referenced_without_declared_type_is_unknown(
         "schema_inference": None,
         "reason": "media_referenced_not_present",
         "explanation": _MEDIA_REFERENCED_EXPLANATION,
+        "estimated_work": _ESTIMATED_WORK_FILES_TO_OPEN_NONE,
     }
     _assert_modality_fact_common(
         modality_fact,
@@ -1137,6 +1172,35 @@ def test_profile_modality_media_referenced_without_declared_type_is_unknown(
         parent_fact_ids=[capabilities_fact.id, schema_fact.id],
     )
     assert connector.list_records_calls == 0
+    assert connector.get_record_calls == 0
+
+
+def test_profile_success_facts_do_not_include_estimated_work(
+    writer: TrustedWriter,
+) -> None:
+    connector = _build_connector(
+        {
+            "columns": {"frame": "Image"},
+            "_inference": "full",
+        },
+        capabilities=_build_capabilities(estimated_record_count=2),
+        records=[{"id": "r1"}, {"id": "r2"}, {"id": "r3"}],
+    )
+    run_id = uuid4()
+    scan_max_records = 10
+
+    facts = DatasetProfiler().profile(
+        connector, writer, run_id, scan_max_records=scan_max_records
+    )
+
+    for fact in facts:
+        if fact.status is not EvidenceStatus.UNKNOWN:
+            _assert_no_estimated_work(fact)
+
+    assert connector.source_metadata_calls == 1
+    assert connector.capabilities_calls == 1
+    assert connector.schema_calls == 1
+    assert connector.list_records_calls == 1
     assert connector.get_record_calls == 0
 
 

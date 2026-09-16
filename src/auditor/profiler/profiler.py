@@ -90,6 +90,24 @@ def _modality_method_provenance() -> dict[str, Any]:
     return method
 
 
+def _records_to_scan_work(magnitude: int | None) -> list[dict[str, Any]]:
+    return [
+        {
+            "unit": "RECORDS_TO_SCAN",
+            "magnitude": magnitude,
+        }
+    ]
+
+
+def _files_to_open_work() -> list[dict[str, Any]]:
+    return [
+        {
+            "unit": "FILES_TO_OPEN",
+            "magnitude": None,
+        }
+    ]
+
+
 def _is_scalar_token(token: str) -> bool:
     lowered = token.lower()
     return lowered in _EXACT_SCALAR_TOKENS or bool(_SIZED_SCALAR_RE.fullmatch(lowered))
@@ -156,6 +174,7 @@ def _classify_modality(
                 "basis": "none",
                 "reason": "schema_incomplete",
                 "explanation": _SCHEMA_INCOMPLETE_EXPLANATION,
+                "estimated_work": [],
             },
         )
 
@@ -196,6 +215,7 @@ def _classify_modality(
                 "basis": "none",
                 "reason": "media_referenced_not_present",
                 "explanation": _MEDIA_REFERENCED_EXPLANATION,
+                "estimated_work": _files_to_open_work(),
             },
         )
 
@@ -219,6 +239,7 @@ def _classify_modality(
             "basis": "none",
             "reason": "modality_ambiguous",
             "explanation": _MODALITY_AMBIGUOUS_EXPLANATION,
+            "estimated_work": [],
         },
     )
 
@@ -268,6 +289,7 @@ class DatasetProfiler:
                     "explanation": (
                         "Connector did not provide an estimated record count."
                     ),
+                    "estimated_work": _records_to_scan_work(None),
                 },
                 source=_source_provenance(source_metadata),
                 method=_method_provenance(),
@@ -311,6 +333,7 @@ class DatasetProfiler:
                         "Exact record count was not computed because "
                         "a full record scan was not authorized."
                     ),
+                    "estimated_work": _records_to_scan_work(estimated_record_count),
                 },
                 source=_source_provenance(source_metadata),
                 method=_exact_count_method_provenance(scan_max_records),
