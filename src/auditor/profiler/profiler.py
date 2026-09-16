@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from copy import deepcopy
+from itertools import islice
 from typing import Any
 from uuid import UUID
 
@@ -307,20 +308,49 @@ class DatasetProfiler:
         )
 
         if scan_authorized:
-            exact_record_count = sum(1 for _ in connector.list_records())
-            exact_fact = Fact(
-                status=EvidenceStatus.COMPUTED,
-                claim="Exact record count computed from an authorized record scan",
-                value={
-                    "metric": "profiler.record_count.exact",
-                    "value": exact_record_count,
-                },
-                source=_source_provenance(source_metadata),
-                method=_exact_count_method_provenance(scan_max_records),
-                run_id=run_id,
-                parent_fact_ids=[],
-                confidence=None,
+            bounded_records = islice(
+                connector.list_records(limit=scan_max_records),
+                scan_max_records,
             )
+            records_scanned = sum(1 for _ in bounded_records)
+            if records_scanned < scan_max_records:
+                exact_fact = Fact(
+                    status=EvidenceStatus.COMPUTED,
+                    claim=(
+                        "Exact record count computed from an authorized record scan"
+                    ),
+                    value={
+                        "metric": "profiler.record_count.exact",
+                        "value": records_scanned,
+                    },
+                    source=_source_provenance(source_metadata),
+                    method=_exact_count_method_provenance(scan_max_records),
+                    run_id=run_id,
+                    parent_fact_ids=[],
+                    confidence=None,
+                )
+            else:
+                exact_fact = Fact(
+                    status=EvidenceStatus.UNKNOWN,
+                    claim="Exact record count was not computed",
+                    value={
+                        "metric": "profiler.record_count.exact",
+                        "value": None,
+                        "reason": "scan_cap_reached",
+                        "explanation": (
+                            "Exact record count was not established because "
+                            "the authorized record scan reached its limit."
+                        ),
+                        "records_scanned": scan_max_records,
+                        "partial": True,
+                        "estimated_work": _records_to_scan_work(None),
+                    },
+                    source=_source_provenance(source_metadata),
+                    method=_exact_count_method_provenance(scan_max_records),
+                    run_id=run_id,
+                    parent_fact_ids=[],
+                    confidence=None,
+                )
         else:
             exact_fact = Fact(
                 status=EvidenceStatus.UNKNOWN,

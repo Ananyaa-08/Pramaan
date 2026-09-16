@@ -1,4 +1,4 @@
-"""C0/C1/C2/C3/C4 DatasetProfiler contract tests."""
+"""C0/C1/C2/C3/C4/C5 DatasetProfiler contract tests."""
 
 from __future__ import annotations
 
@@ -123,6 +123,23 @@ def _unknown_exact_value(*, estimated_record_count: int | None) -> dict[str, Any
     }
 
 
+def _scan_cap_exact_value(*, scan_max_records: int) -> dict[str, Any]:
+    return {
+        "metric": "profiler.record_count.exact",
+        "value": None,
+        "reason": "scan_cap_reached",
+        "explanation": (
+            "Exact record count was not established because "
+            "the authorized record scan reached its limit."
+        ),
+        "records_scanned": scan_max_records,
+        "partial": True,
+        "estimated_work": [
+            {"unit": "RECORDS_TO_SCAN", "magnitude": None},
+        ],
+    }
+
+
 _SCHEMA_INCOMPLETE_EXPLANATION = (
     "Connector schema is incomplete or unavailable for modality classification."
 )
@@ -164,11 +181,13 @@ class CountingMetadataConnector(Connector):
         capabilities: CapabilityDescriptor,
         schema: dict[str, Any],
         records: list[dict[str, Any]] | None = None,
+        max_pulls: int | None = None,
     ) -> None:
         self._source_metadata = deepcopy(source_metadata)
         self._capabilities = capabilities
         self._schema = deepcopy(schema)
         self._records = None if records is None else tuple(deepcopy(records))
+        self._max_pulls = max_pulls
         self.source_metadata_calls = 0
         self.capabilities_calls = 0
         self.schema_calls = 0
@@ -195,6 +214,10 @@ class CountingMetadataConnector(Connector):
         for record in self._records:
             if limit is not None and count >= limit:
                 return
+            if self._max_pulls is not None and self.records_produced >= self._max_pulls:
+                raise AssertionError(
+                    f"must not pull more than {self._max_pulls} records"
+                )
             self.records_produced += 1
             yield deepcopy(record)
             count += 1
@@ -223,12 +246,14 @@ def _build_connector(
     *,
     capabilities: CapabilityDescriptor | None = None,
     records: list[dict[str, Any]] | None = None,
+    max_pulls: int | None = None,
 ) -> CountingMetadataConnector:
     return CountingMetadataConnector(
         source_metadata=deepcopy(SOURCE_METADATA),
         capabilities=capabilities if capabilities is not None else CAPABILITIES,
         schema=deepcopy(schema),
         records=records,
+        max_pulls=max_pulls,
     )
 
 
@@ -701,6 +726,263 @@ def test_profile_rejects_negative_scan_max_records_before_connector_use(
     assert connector.schema_calls == 0
     assert connector.list_records_calls == 0
     assert connector.get_record_calls == 0
+
+
+def test_profile_exact_count_stops_at_runtime_scan_cap(
+    store: EvidenceStore, writer: TrustedWriter
+) -> None:
+    scan_max_records = 2
+    stored_records = [
+        {"id": "r1"},
+        {"id": "r2"},
+        {"id": "r3"},
+        {"id": "r4"},
+        {"id": "r5"},
+    ]
+    connector = _build_connector(
+        FLAT_SCHEMA,
+        capabilities=_build_capabilities(estimated_record_count=2),
+        records=stored_records,
+        max_pulls=scan_max_records,
+    )
+    original_metadata = deepcopy(connector._source_metadata)
+    run_id = uuid4()
+
+    facts = DatasetProfiler().profile(
+        connector, writer, run_id, scan_max_records=scan_max_records
+    )
+
+    exact_fact = facts[4]
+    assert exact_fact.status is EvidenceStatus.UNKNOWN
+    assert exact_fact.claim == "Exact record count was not computed"
+    assert exact_fact.value == _scan_cap_exact_value(scan_max_records=scan_max_records)
+    assert exact_fact.value["records_scanned"] == scan_max_records
+    assert exact_fact.value["partial"] is True
+    assert exact_fact.value["estimated_work"] == [
+        {"unit": "RECORDS_TO_SCAN", "magnitude": None},
+    ]
+    _assert_exact_fact_common(
+        exact_fact,
+        source_metadata=original_metadata,
+        run_id=run_id,
+        scan_max_records=scan_max_records,
+    )
+    assert connector.list_records_calls == 1
+    assert connector.records_produced == scan_max_records
+    assert connector.get_record_calls == 0
+    assert connector.capabilities_calls == 1
+
+    stored = store.get_by_run(run_id)
+    assert exact_fact.id in {fact.id for fact in stored}
+    assert {fact.id for fact in stored} == {fact.id for fact in facts}
+
+
+def test_profile_exact_count_at_cap_is_unknown_without_exhaustion_proof(
+    store: EvidenceStore, writer: TrustedWriter
+) -> None:
+    scan_max_records = 3
+    stored_records = [
+        {"id": "r1"},
+        {"id": "r2"},
+        {"id": "r3"},
+    ]
+    connector = _build_connector(
+        FLAT_SCHEMA,
+        capabilities=_build_capabilities(estimated_record_count=3),
+        records=stored_records,
+        max_pulls=scan_max_records,
+    )
+    original_metadata = deepcopy(connector._source_metadata)
+    run_id = uuid4()
+
+    facts = DatasetProfiler().profile(
+        connector, writer, run_id, scan_max_records=scan_max_records
+    )
+
+    exact_fact = facts[4]
+    assert exact_fact.status is EvidenceStatus.UNKNOWN
+    assert exact_fact.claim == "Exact record count was not computed"
+    assert exact_fact.value == _scan_cap_exact_value(scan_max_records=scan_max_records)
+    _assert_exact_fact_common(
+        exact_fact,
+        source_metadata=original_metadata,
+        run_id=run_id,
+        scan_max_records=scan_max_records,
+    )
+    assert connector.list_records_calls == 1
+    assert connector.records_produced == scan_max_records
+    assert connector.get_record_calls == 0
+
+    stored = store.get_by_run(run_id)
+    assert exact_fact.id in {fact.id for fact in stored}
+    assert {fact.id for fact in stored} == {fact.id for fact in facts}
+
+
+def test_profile_exact_count_below_cap_remains_computed(
+    store: EvidenceStore, writer: TrustedWriter
+) -> None:
+    scan_max_records = 10
+    stored_records = [
+        {"id": "r1", "label": "a"},
+        {"id": "r2", "label": "b"},
+        {"id": "r3", "label": "c"},
+    ]
+    connector = _build_connector(
+        FLAT_SCHEMA,
+        capabilities=_build_capabilities(estimated_record_count=2),
+        records=stored_records,
+        max_pulls=scan_max_records,
+    )
+    original_metadata = deepcopy(connector._source_metadata)
+    run_id = uuid4()
+
+    facts = DatasetProfiler().profile(
+        connector, writer, run_id, scan_max_records=scan_max_records
+    )
+
+    exact_fact = facts[4]
+    assert exact_fact.status is EvidenceStatus.COMPUTED
+    assert exact_fact.claim == (
+        "Exact record count computed from an authorized record scan"
+    )
+    assert exact_fact.value == {
+        "metric": "profiler.record_count.exact",
+        "value": 3,
+    }
+    assert "partial" not in exact_fact.value
+    assert "records_scanned" not in exact_fact.value
+    assert "reason" not in exact_fact.value
+    assert "explanation" not in exact_fact.value
+    _assert_no_estimated_work(exact_fact)
+    _assert_exact_fact_common(
+        exact_fact,
+        source_metadata=original_metadata,
+        run_id=run_id,
+        scan_max_records=scan_max_records,
+    )
+    assert connector.list_records_calls == 1
+    assert connector.records_produced == len(stored_records)
+    assert connector.get_record_calls == 0
+
+    stored = store.get_by_run(run_id)
+    assert exact_fact.id in {fact.id for fact in stored}
+    assert {fact.id for fact in stored} == {fact.id for fact in facts}
+
+
+def test_profile_estimated_work_lists_are_not_shared_across_facts_or_calls(
+    writer: TrustedWriter,
+) -> None:
+    incomplete_schema = {"columns": {}, "_inference": "unavailable"}
+    incomplete_capabilities = _build_capabilities(estimated_record_count=None)
+    media_capabilities = _build_capabilities(media_is_referenced_not_present=True)
+
+    first_incomplete = _build_connector(
+        incomplete_schema, capabilities=incomplete_capabilities
+    )
+    second_incomplete = _build_connector(
+        incomplete_schema, capabilities=incomplete_capabilities
+    )
+    first_media = _build_connector(FLAT_SCHEMA, capabilities=media_capabilities)
+    second_media = _build_connector(FLAT_SCHEMA, capabilities=media_capabilities)
+
+    first_incomplete_facts = DatasetProfiler().profile(
+        first_incomplete, writer, uuid4()
+    )
+    second_incomplete_facts = DatasetProfiler().profile(
+        second_incomplete, writer, uuid4()
+    )
+    first_media_facts = DatasetProfiler().profile(first_media, writer, uuid4())
+    second_media_facts = DatasetProfiler().profile(second_media, writer, uuid4())
+
+    first_indexed = first_incomplete_facts[3]
+    first_exact = first_incomplete_facts[4]
+    first_incomplete_modality = first_incomplete_facts[5]
+    second_indexed = second_incomplete_facts[3]
+    second_exact = second_incomplete_facts[4]
+    second_incomplete_modality = second_incomplete_facts[5]
+    first_media_modality = first_media_facts[5]
+    second_media_modality = second_media_facts[5]
+
+    assert first_indexed.status is EvidenceStatus.UNKNOWN
+    assert first_exact.status is EvidenceStatus.UNKNOWN
+    assert first_incomplete_modality.status is EvidenceStatus.UNKNOWN
+    assert second_indexed.status is EvidenceStatus.UNKNOWN
+    assert second_exact.status is EvidenceStatus.UNKNOWN
+    assert second_incomplete_modality.status is EvidenceStatus.UNKNOWN
+    assert first_media_modality.status is EvidenceStatus.UNKNOWN
+    assert second_media_modality.status is EvidenceStatus.UNKNOWN
+
+    first_indexed_work = first_indexed.value["estimated_work"]
+    first_exact_work = first_exact.value["estimated_work"]
+    first_incomplete_work = first_incomplete_modality.value["estimated_work"]
+    second_indexed_work = second_indexed.value["estimated_work"]
+    second_exact_work = second_exact.value["estimated_work"]
+    second_incomplete_work = second_incomplete_modality.value["estimated_work"]
+    first_media_work = first_media_modality.value["estimated_work"]
+    second_media_work = second_media_modality.value["estimated_work"]
+
+    assert first_indexed_work is not first_exact_work
+    assert first_indexed_work is not first_incomplete_work
+    assert first_exact_work is not first_incomplete_work
+    assert first_media_work is not first_indexed_work
+    assert first_media_work is not first_exact_work
+    assert first_media_work is not first_incomplete_work
+
+    assert first_indexed_work is not second_indexed_work
+    assert first_exact_work is not second_exact_work
+    assert first_incomplete_work is not second_incomplete_work
+    assert first_media_work is not second_media_work
+
+    second_indexed_payload = deepcopy(second_indexed.value)
+    second_exact_payload = deepcopy(second_exact.value)
+    second_incomplete_payload = deepcopy(second_incomplete_modality.value)
+    second_media_payload = deepcopy(second_media_modality.value)
+
+    first_indexed_work.append({"unit": "RECORDS_TO_SCAN", "magnitude": 999})
+    assert second_indexed.value == second_indexed_payload
+    assert second_indexed.value == _unknown_indexed_value()
+
+    first_exact_work.append({"unit": "RECORDS_TO_SCAN", "magnitude": 999})
+    assert second_exact.value == second_exact_payload
+    assert second_exact.value == _unknown_exact_value(estimated_record_count=None)
+
+    first_incomplete_work.append({"unit": "FILES_TO_OPEN", "magnitude": 1})
+    assert second_incomplete_modality.value == second_incomplete_payload
+    assert second_incomplete_modality.value == {
+        "metric": "profiler.modality",
+        "modalities": ["unknown"],
+        "basis": "none",
+        "schema_inference": "unavailable",
+        "reason": "schema_incomplete",
+        "explanation": _SCHEMA_INCOMPLETE_EXPLANATION,
+        "estimated_work": [],
+    }
+
+    first_media_work.append({"unit": "BYTES_TO_FETCH", "magnitude": 1})
+    assert second_media_modality.value == second_media_payload
+    assert second_media_modality.value == {
+        "metric": "profiler.modality",
+        "modalities": ["unknown"],
+        "basis": "none",
+        "schema_inference": None,
+        "reason": "media_referenced_not_present",
+        "explanation": _MEDIA_REFERENCED_EXPLANATION,
+        "estimated_work": [
+            {"unit": "FILES_TO_OPEN", "magnitude": None},
+        ],
+    }
+
+    assert first_exact.value["estimated_work"] is first_exact_work
+    assert first_incomplete_modality.value["estimated_work"] is first_incomplete_work
+
+    for connector in (
+        first_incomplete,
+        second_incomplete,
+        first_media,
+        second_media,
+    ):
+        assert connector.list_records_calls == 0
+        assert connector.get_record_calls == 0
 
 
 def test_profile_modality_flat_scalar_schema_is_computed_tabular(
