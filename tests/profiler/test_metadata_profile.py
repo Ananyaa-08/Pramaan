@@ -1,4 +1,4 @@
-"""C0/C1/C2 DatasetProfiler contract tests."""
+"""C0/C1/C2/C3 DatasetProfiler contract tests."""
 
 from __future__ import annotations
 
@@ -46,6 +46,37 @@ WRAPPED_SCHEMA: dict[str, Any] = {
     "_sample_rows": 2,
 }
 
+WRAPPED_FULL_SCALAR_SCHEMA: dict[str, Any] = {
+    "columns": {
+        "id": "string",
+        "score": "int64",
+        "flag": "bool",
+        "when": "timestamp",
+        "note": "str | null",
+        "unsigned": "uint32",
+        "ratio": "double",
+        "amount": "decimal128",
+        "day": "date32",
+        "nullable_number": "int64 | null",
+    },
+    "_inference": "full",
+}
+
+REPOSITORY_FILE_SCHEMA: dict[str, Any] = {
+    "columns": {
+        "path": "str",
+        "sha": "str",
+        "size": "int",
+        "kind": "str",
+        "download_url": "str | null",
+        "revision": "str",
+        "image": "str",
+        "audio_path": "str",
+    },
+    "_inference": "full",
+    "record_model": "repository_file",
+}
+
 _METHOD_KEYS = {
     "analyzer_name",
     "analyzer_version",
@@ -65,6 +96,17 @@ _UNKNOWN_EXACT_VALUE = {
         "a full record scan was not authorized."
     ),
 }
+
+_SCHEMA_INCOMPLETE_EXPLANATION = (
+    "Connector schema is incomplete or unavailable for modality classification."
+)
+_MEDIA_REFERENCED_EXPLANATION = (
+    "Dataset content is referenced but not present, and the schema does not "
+    "declare a content modality."
+)
+_MODALITY_AMBIGUOUS_EXPLANATION = (
+    "Connector schema types do not establish a supported modality."
+)
 
 
 def _build_capabilities(
@@ -193,6 +235,18 @@ def _assert_exact_count_method(
     assert method["sampling_seed"] is None
 
 
+def _assert_modality_method(method: dict[str, Any]) -> None:
+    assert set(method) == _METHOD_KEYS
+    assert method["analyzer_name"] == "dataset_profiler"
+    assert isinstance(method["analyzer_version"], str)
+    assert method["analyzer_version"].strip()
+    assert method["model_name"] is None
+    assert method["model_version"] is None
+    assert method["parameters"] == {"operation": "modality_classification"}
+    assert method["sampling_strategy"] is None
+    assert method["sampling_seed"] is None
+
+
 def _assert_shared_provenance(
     fact: Fact, *, source_metadata: dict[str, Any], run_id: Any
 ) -> None:
@@ -225,6 +279,37 @@ def _assert_exact_fact_common(
     _assert_exact_count_method(fact.method, scan_max_records=scan_max_records)
 
 
+def _assert_modality_fact_common(
+    fact: Fact,
+    *,
+    source_metadata: dict[str, Any],
+    run_id: Any,
+    parent_fact_ids: list[Any],
+) -> None:
+    assert fact.run_id == run_id
+    assert fact.confidence is None
+    assert fact.parent_fact_ids == parent_fact_ids
+    assert fact.source == {
+        "source_uri": source_metadata["source_uri"],
+        "revision": source_metadata["revision"],
+        "file_path": None,
+        "field": None,
+        "record_id": None,
+    }
+    _assert_modality_method(fact.method)
+
+
+def _assert_metric_order(facts: list[Fact]) -> None:
+    assert [fact.value["metric"] for fact in facts] == [
+        "profiler.source_metadata",
+        "profiler.capabilities",
+        "profiler.schema",
+        "profiler.record_count.indexed",
+        "profiler.record_count.exact",
+        "profiler.modality",
+    ]
+
+
 def test_profile_writes_source_capabilities_and_schema_facts(
     store: EvidenceStore, writer: TrustedWriter
 ) -> None:
@@ -236,18 +321,20 @@ def test_profile_writes_source_capabilities_and_schema_facts(
 
     facts = DatasetProfiler().profile(connector, writer, run_id)
 
-    assert len(facts) == 5
-    assert [fact.value["metric"] for fact in facts] == [
-        "profiler.source_metadata",
-        "profiler.capabilities",
-        "profiler.schema",
-        "profiler.record_count.indexed",
-        "profiler.record_count.exact",
-    ]
+    assert len(facts) == 6
+    _assert_metric_order(facts)
     assert all(fact.status is EvidenceStatus.OBSERVED for fact in facts[:4])
     assert facts[4].status is EvidenceStatus.UNKNOWN
+    assert facts[5].status is EvidenceStatus.COMPUTED
 
-    source_fact, capabilities_fact, schema_fact, count_fact, exact_fact = facts
+    (
+        source_fact,
+        capabilities_fact,
+        schema_fact,
+        count_fact,
+        exact_fact,
+        modality_fact,
+    ) = facts
     assert source_fact.value == {
         "metric": "profiler.source_metadata",
         "value": original_metadata,
@@ -275,6 +362,15 @@ def test_profile_writes_source_capabilities_and_schema_facts(
     assert count_fact.claim == "Connector-reported estimated record count"
     assert exact_fact.claim == "Exact record count was not computed"
     assert exact_fact.value == _UNKNOWN_EXACT_VALUE
+    assert modality_fact.claim == (
+        "Dataset modality classified as tabular from connector schema types"
+    )
+    assert modality_fact.value == {
+        "metric": "profiler.modality",
+        "modalities": ["tabular"],
+        "basis": "schema_types",
+        "schema_inference": None,
+    }
 
     assert connector._source_metadata == original_metadata
     assert connector._schema == original_schema
@@ -291,6 +387,12 @@ def test_profile_writes_source_capabilities_and_schema_facts(
         source_metadata=original_metadata,
         run_id=run_id,
         scan_max_records=0,
+    )
+    _assert_modality_fact_common(
+        modality_fact,
+        source_metadata=original_metadata,
+        run_id=run_id,
+        parent_fact_ids=[schema_fact.id],
     )
 
     assert "connector-reported schema" in schema_fact.claim.lower()
@@ -341,14 +443,15 @@ def test_profile_uses_caller_run_id_and_returns_written_facts(
 
     facts = DatasetProfiler().profile(connector, writer, run_id)
 
-    assert len(facts) == 5
-    assert len({fact.id for fact in facts}) == 5
+    assert len(facts) == 6
+    assert len({fact.id for fact in facts}) == 6
     assert all(fact.run_id == run_id for fact in facts)
     assert all(fact.confidence is None for fact in facts)
-    assert all(fact.parent_fact_ids == [] for fact in facts)
+    assert all(fact.parent_fact_ids == [] for fact in facts[:5])
+    assert facts[5].parent_fact_ids == [facts[2].id]
 
     stored = store.get_by_run(run_id)
-    assert len(stored) == 5
+    assert len(stored) == 6
     assert {fact.id for fact in stored} == {fact.id for fact in facts}
 
 
@@ -565,5 +668,508 @@ def test_profile_rejects_negative_scan_max_records_before_connector_use(
     assert connector.source_metadata_calls == 0
     assert connector.capabilities_calls == 0
     assert connector.schema_calls == 0
+    assert connector.list_records_calls == 0
+    assert connector.get_record_calls == 0
+
+
+def test_profile_modality_flat_scalar_schema_is_computed_tabular(
+    store: EvidenceStore, writer: TrustedWriter
+) -> None:
+    schema = {
+        "id": "str",
+        "label": "str",
+        "duration_s": "float",
+        "_inference": "full",
+        "_sample_rows": 3,
+    }
+    connector = _build_connector(schema)
+    original_metadata = deepcopy(connector._source_metadata)
+    run_id = uuid4()
+
+    facts = DatasetProfiler().profile(connector, writer, run_id)
+
+    assert len(facts) == 6
+    _assert_metric_order(facts)
+    schema_fact = facts[2]
+    modality_fact = facts[5]
+    assert modality_fact.status is EvidenceStatus.COMPUTED
+    assert modality_fact.claim == (
+        "Dataset modality classified as tabular from connector schema types"
+    )
+    assert modality_fact.value == {
+        "metric": "profiler.modality",
+        "modalities": ["tabular"],
+        "basis": "schema_types",
+        "schema_inference": "full",
+    }
+    _assert_modality_fact_common(
+        modality_fact,
+        source_metadata=original_metadata,
+        run_id=run_id,
+        parent_fact_ids=[schema_fact.id],
+    )
+    assert connector.list_records_calls == 0
+    assert connector.get_record_calls == 0
+
+    stored = store.get_by_run(run_id)
+    assert modality_fact.id in {fact.id for fact in stored}
+    assert {fact.id for fact in stored} == {fact.id for fact in facts}
+
+
+def test_profile_modality_wrapped_full_scalar_schema_is_computed_tabular(
+    writer: TrustedWriter,
+) -> None:
+    connector = _build_connector(WRAPPED_FULL_SCALAR_SCHEMA)
+    original_metadata = deepcopy(connector._source_metadata)
+    run_id = uuid4()
+
+    facts = DatasetProfiler().profile(connector, writer, run_id)
+
+    modality_fact = facts[5]
+    assert modality_fact.status is EvidenceStatus.COMPUTED
+    assert modality_fact.claim == (
+        "Dataset modality classified as tabular from connector schema types"
+    )
+    assert modality_fact.value == {
+        "metric": "profiler.modality",
+        "modalities": ["tabular"],
+        "basis": "schema_types",
+        "schema_inference": "full",
+    }
+    _assert_modality_fact_common(
+        modality_fact,
+        source_metadata=original_metadata,
+        run_id=run_id,
+        parent_fact_ids=[facts[2].id],
+    )
+    assert connector.list_records_calls == 0
+    assert connector.get_record_calls == 0
+
+
+def test_profile_modality_sample_head_scalar_preserves_inference(
+    writer: TrustedWriter,
+) -> None:
+    connector = _build_connector(WRAPPED_SCHEMA)
+    original_metadata = deepcopy(connector._source_metadata)
+    run_id = uuid4()
+
+    facts = DatasetProfiler().profile(connector, writer, run_id)
+
+    modality_fact = facts[5]
+    assert modality_fact.status is EvidenceStatus.COMPUTED
+    assert modality_fact.claim == (
+        "Dataset modality classified as tabular from connector schema types"
+    )
+    assert modality_fact.value == {
+        "metric": "profiler.modality",
+        "modalities": ["tabular"],
+        "basis": "schema_types",
+        "schema_inference": "sample_head",
+    }
+    _assert_modality_fact_common(
+        modality_fact,
+        source_metadata=original_metadata,
+        run_id=run_id,
+        parent_fact_ids=[facts[2].id],
+    )
+    assert connector.list_records_calls == 0
+    assert connector.get_record_calls == 0
+
+
+def test_profile_modality_repository_file_takes_precedence(
+    writer: TrustedWriter,
+) -> None:
+    schema = {
+        **deepcopy(REPOSITORY_FILE_SCHEMA),
+        "columns": {
+            **REPOSITORY_FILE_SCHEMA["columns"],
+            "thumbnail": "Image",
+            "clip": "Audio",
+        },
+    }
+    connector = _build_connector(schema)
+    original_metadata = deepcopy(connector._source_metadata)
+    run_id = uuid4()
+
+    facts = DatasetProfiler().profile(connector, writer, run_id)
+
+    modality_fact = facts[5]
+    assert modality_fact.status is EvidenceStatus.OBSERVED
+    assert modality_fact.claim == "Connector schema declares repository-file records"
+    assert modality_fact.value == {
+        "metric": "profiler.modality",
+        "modalities": ["repository_file"],
+        "basis": "schema_record_model",
+        "schema_inference": "full",
+    }
+    _assert_modality_fact_common(
+        modality_fact,
+        source_metadata=original_metadata,
+        run_id=run_id,
+        parent_fact_ids=[facts[2].id],
+    )
+    assert connector.list_records_calls == 0
+    assert connector.get_record_calls == 0
+
+
+@pytest.mark.parametrize(
+    ("type_token", "modality"),
+    [
+        ("Text", "text"),
+        ("Image", "image"),
+        ("Audio", "audio"),
+        ("Video", "video"),
+        ("text", "text"),
+        ("IMAGE", "image"),
+        ("Image(mode=None, decode=True)", "image"),
+        ("Audio(sampling_rate=16000, decode=True)", "audio"),
+        ("Video(decode=True)", "video"),
+        ("Sequence(feature=Text)", "text"),
+    ],
+    ids=[
+        "Text",
+        "Image",
+        "Audio",
+        "Video",
+        "text_case",
+        "IMAGE_case",
+        "Image_structured",
+        "Audio_structured",
+        "Video_structured",
+        "Sequence_Text",
+    ],
+)
+def test_profile_modality_explicit_content_type_is_observed(
+    writer: TrustedWriter, type_token: str, modality: str
+) -> None:
+    schema = {
+        "columns": {"payload": type_token},
+        "_inference": "full",
+    }
+    connector = _build_connector(schema)
+    original_metadata = deepcopy(connector._source_metadata)
+    run_id = uuid4()
+
+    facts = DatasetProfiler().profile(connector, writer, run_id)
+
+    modality_fact = facts[5]
+    assert modality_fact.status is EvidenceStatus.OBSERVED
+    assert modality_fact.claim == "Connector schema declares dataset modality"
+    assert modality_fact.value == {
+        "metric": "profiler.modality",
+        "modalities": [modality],
+        "basis": "schema_types",
+        "schema_inference": "full",
+    }
+    _assert_modality_fact_common(
+        modality_fact,
+        source_metadata=original_metadata,
+        run_id=run_id,
+        parent_fact_ids=[facts[2].id],
+    )
+    assert connector.list_records_calls == 0
+    assert connector.get_record_calls == 0
+
+
+def test_profile_modality_nested_explicit_type_descriptions_are_recognized(
+    writer: TrustedWriter,
+) -> None:
+    schema = {
+        "columns": {
+            "media": {
+                "dtype": "Image",
+                "nested": [{"inner": "Audio"}],
+            }
+        },
+        "_inference": "full",
+    }
+    connector = _build_connector(schema)
+    original_metadata = deepcopy(connector._source_metadata)
+    run_id = uuid4()
+
+    facts = DatasetProfiler().profile(connector, writer, run_id)
+
+    modality_fact = facts[5]
+    assert modality_fact.status is EvidenceStatus.OBSERVED
+    assert modality_fact.claim == "Connector schema declares dataset modality"
+    assert modality_fact.value == {
+        "metric": "profiler.modality",
+        "modalities": ["multimodal", "image", "audio"],
+        "basis": "schema_types",
+        "schema_inference": "full",
+    }
+    _assert_modality_fact_common(
+        modality_fact,
+        source_metadata=original_metadata,
+        run_id=run_id,
+        parent_fact_ids=[facts[2].id],
+    )
+    assert connector.list_records_calls == 0
+    assert connector.get_record_calls == 0
+
+
+def test_profile_modality_multiple_explicit_types_are_ordered_multimodal(
+    writer: TrustedWriter,
+) -> None:
+    schema = {
+        "columns": {
+            "clip": "Video",
+            "caption": "Text",
+            "frame": "Image",
+            "track": "Audio",
+        },
+        "_inference": "full",
+    }
+    connector = _build_connector(schema)
+    original_metadata = deepcopy(connector._source_metadata)
+    run_id = uuid4()
+
+    facts = DatasetProfiler().profile(connector, writer, run_id)
+
+    modality_fact = facts[5]
+    assert modality_fact.status is EvidenceStatus.OBSERVED
+    assert modality_fact.claim == "Connector schema declares dataset modality"
+    assert modality_fact.value == {
+        "metric": "profiler.modality",
+        "modalities": ["multimodal", "text", "image", "audio", "video"],
+        "basis": "schema_types",
+        "schema_inference": "full",
+    }
+    _assert_modality_fact_common(
+        modality_fact,
+        source_metadata=original_metadata,
+        run_id=run_id,
+        parent_fact_ids=[facts[2].id],
+    )
+    assert connector.list_records_calls == 0
+    assert connector.get_record_calls == 0
+
+
+def test_profile_modality_media_like_field_names_with_scalar_types_stay_tabular(
+    writer: TrustedWriter,
+) -> None:
+    schema = {
+        "columns": {
+            "image": "str",
+            "audio_path": "string",
+            "video_url": "str",
+            "text": "str",
+        },
+        "_inference": "full",
+    }
+    connector = _build_connector(schema)
+    original_metadata = deepcopy(connector._source_metadata)
+    run_id = uuid4()
+
+    facts = DatasetProfiler().profile(connector, writer, run_id)
+
+    modality_fact = facts[5]
+    assert modality_fact.status is EvidenceStatus.COMPUTED
+    assert modality_fact.claim == (
+        "Dataset modality classified as tabular from connector schema types"
+    )
+    assert modality_fact.value == {
+        "metric": "profiler.modality",
+        "modalities": ["tabular"],
+        "basis": "schema_types",
+        "schema_inference": "full",
+    }
+    _assert_modality_fact_common(
+        modality_fact,
+        source_metadata=original_metadata,
+        run_id=run_id,
+        parent_fact_ids=[facts[2].id],
+    )
+    assert connector.list_records_calls == 0
+    assert connector.get_record_calls == 0
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {"columns": {}, "_inference": "unavailable"},
+        {"columns": {}, "_inference": "full"},
+        {"_inference": "unavailable", "columns": {"id": "str"}},
+        {},
+    ],
+    ids=[
+        "unavailable_empty_columns",
+        "empty_columns",
+        "unavailable_with_columns",
+        "empty_flat_schema",
+    ],
+)
+def test_profile_modality_incomplete_schema_is_unknown(
+    writer: TrustedWriter, schema: dict[str, Any]
+) -> None:
+    connector = _build_connector(schema)
+    original_metadata = deepcopy(connector._source_metadata)
+    run_id = uuid4()
+
+    facts = DatasetProfiler().profile(connector, writer, run_id)
+
+    modality_fact = facts[5]
+    assert modality_fact.status is EvidenceStatus.UNKNOWN
+    assert modality_fact.claim == "Dataset modality could not be determined"
+    assert modality_fact.value == {
+        "metric": "profiler.modality",
+        "modalities": ["unknown"],
+        "basis": "none",
+        "schema_inference": schema.get("_inference"),
+        "reason": "schema_incomplete",
+        "explanation": _SCHEMA_INCOMPLETE_EXPLANATION,
+    }
+    _assert_modality_fact_common(
+        modality_fact,
+        source_metadata=original_metadata,
+        run_id=run_id,
+        parent_fact_ids=[facts[2].id],
+    )
+    assert connector.list_records_calls == 0
+    assert connector.get_record_calls == 0
+
+
+def test_profile_modality_unsupported_types_are_ambiguous(
+    writer: TrustedWriter,
+) -> None:
+    schema = {
+        "columns": {
+            "embedding": "float32[768]",
+            "payload": "custom_struct",
+        },
+        "_inference": "full",
+    }
+    connector = _build_connector(schema)
+    original_metadata = deepcopy(connector._source_metadata)
+    run_id = uuid4()
+
+    facts = DatasetProfiler().profile(connector, writer, run_id)
+
+    modality_fact = facts[5]
+    assert modality_fact.status is EvidenceStatus.UNKNOWN
+    assert modality_fact.claim == "Dataset modality could not be determined"
+    assert modality_fact.value == {
+        "metric": "profiler.modality",
+        "modalities": ["unknown"],
+        "basis": "none",
+        "schema_inference": "full",
+        "reason": "modality_ambiguous",
+        "explanation": _MODALITY_AMBIGUOUS_EXPLANATION,
+    }
+    _assert_modality_fact_common(
+        modality_fact,
+        source_metadata=original_metadata,
+        run_id=run_id,
+        parent_fact_ids=[facts[2].id],
+    )
+    assert connector.list_records_calls == 0
+    assert connector.get_record_calls == 0
+
+
+def test_profile_modality_does_not_match_partial_type_tokens(
+    writer: TrustedWriter,
+) -> None:
+    schema = {
+        "columns": {
+            "label": "ImageNetLabel",
+            "clip": "audiovisual",
+            "shot": "videography",
+            "body": "textual",
+        },
+        "_inference": "full",
+    }
+    connector = _build_connector(schema)
+    original_metadata = deepcopy(connector._source_metadata)
+    run_id = uuid4()
+
+    facts = DatasetProfiler().profile(connector, writer, run_id)
+
+    modality_fact = facts[5]
+    assert modality_fact.status is EvidenceStatus.UNKNOWN
+    assert modality_fact.claim == "Dataset modality could not be determined"
+    assert modality_fact.value == {
+        "metric": "profiler.modality",
+        "modalities": ["unknown"],
+        "basis": "none",
+        "schema_inference": "full",
+        "reason": "modality_ambiguous",
+        "explanation": _MODALITY_AMBIGUOUS_EXPLANATION,
+    }
+    _assert_modality_fact_common(
+        modality_fact,
+        source_metadata=original_metadata,
+        run_id=run_id,
+        parent_fact_ids=[facts[2].id],
+    )
+    assert connector.list_records_calls == 0
+    assert connector.get_record_calls == 0
+
+
+def test_profile_modality_media_referenced_without_declared_type_is_unknown(
+    writer: TrustedWriter,
+) -> None:
+    connector = _build_connector(
+        FLAT_SCHEMA,
+        capabilities=_build_capabilities(media_is_referenced_not_present=True),
+    )
+    original_metadata = deepcopy(connector._source_metadata)
+    run_id = uuid4()
+
+    facts = DatasetProfiler().profile(connector, writer, run_id)
+
+    capabilities_fact = facts[1]
+    schema_fact = facts[2]
+    modality_fact = facts[5]
+    assert modality_fact.status is EvidenceStatus.UNKNOWN
+    assert modality_fact.claim == "Dataset modality could not be determined"
+    assert modality_fact.value == {
+        "metric": "profiler.modality",
+        "modalities": ["unknown"],
+        "basis": "none",
+        "schema_inference": None,
+        "reason": "media_referenced_not_present",
+        "explanation": _MEDIA_REFERENCED_EXPLANATION,
+    }
+    _assert_modality_fact_common(
+        modality_fact,
+        source_metadata=original_metadata,
+        run_id=run_id,
+        parent_fact_ids=[capabilities_fact.id, schema_fact.id],
+    )
+    assert connector.list_records_calls == 0
+    assert connector.get_record_calls == 0
+
+
+def test_profile_modality_explicit_media_observed_when_bytes_referenced(
+    writer: TrustedWriter,
+) -> None:
+    schema = {
+        "columns": {"frame": "Image"},
+        "_inference": "full",
+    }
+    connector = _build_connector(
+        schema,
+        capabilities=_build_capabilities(media_is_referenced_not_present=True),
+    )
+    original_metadata = deepcopy(connector._source_metadata)
+    run_id = uuid4()
+
+    facts = DatasetProfiler().profile(connector, writer, run_id)
+
+    modality_fact = facts[5]
+    assert modality_fact.status is EvidenceStatus.OBSERVED
+    assert modality_fact.claim == "Connector schema declares dataset modality"
+    assert modality_fact.value == {
+        "metric": "profiler.modality",
+        "modalities": ["image"],
+        "basis": "schema_types",
+        "schema_inference": "full",
+    }
+    _assert_modality_fact_common(
+        modality_fact,
+        source_metadata=original_metadata,
+        run_id=run_id,
+        parent_fact_ids=[facts[2].id],
+    )
     assert connector.list_records_calls == 0
     assert connector.get_record_calls == 0
