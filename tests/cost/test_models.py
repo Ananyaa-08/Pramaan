@@ -57,8 +57,18 @@ def test_work_item_accepts_zero_positive_and_unknown_magnitudes() -> None:
     assert positive.magnitude == 12
     assert unknown.magnitude is None
 
-    with pytest.raises(ValidationError):
+
+def test_3_4_work_item_magnitude_is_required() -> None:
+    _, _, _, WorkItem, WorkUnit = _import_cost_models()
+
+    with pytest.raises(ValidationError) as exc_info:
         WorkItem(unit=WorkUnit.RECORDS_TO_SCAN)
+
+    errors = exc_info.value.errors()
+    assert len(errors) == 1
+    assert errors[0]["type"] == "missing"
+    assert errors[0]["loc"] == ("magnitude",)
+    assert errors[0]["msg"] == "Field required"
 
 
 def test_work_item_rejects_negative_magnitude() -> None:
@@ -143,8 +153,18 @@ def test_work_estimate_allows_empty_items() -> None:
     assert estimate.items == ()
     assert isinstance(estimate.items, tuple)
 
-    with pytest.raises(ValidationError):
+
+def test_3_4_work_estimate_items_is_required() -> None:
+    _, _, WorkEstimate, _, _ = _import_cost_models()
+
+    with pytest.raises(ValidationError) as exc_info:
         WorkEstimate()
+
+    errors = exc_info.value.errors()
+    assert len(errors) == 1
+    assert errors[0]["type"] == "missing"
+    assert errors[0]["loc"] == ("items",)
+    assert errors[0]["msg"] == "Field required"
 
 
 def test_work_estimate_does_not_share_input_container() -> None:
@@ -246,8 +266,18 @@ def test_budget_allows_empty_limits() -> None:
     assert budget.limits == ()
     assert isinstance(budget.limits, tuple)
 
-    with pytest.raises(ValidationError):
+
+def test_3_4_budget_limits_is_required() -> None:
+    Budget, _, _, _, _ = _import_cost_models()
+
+    with pytest.raises(ValidationError) as exc_info:
         Budget()
+
+    errors = exc_info.value.errors()
+    assert len(errors) == 1
+    assert errors[0]["type"] == "missing"
+    assert errors[0]["loc"] == ("limits",)
+    assert errors[0]["msg"] == "Field required"
 
 
 def test_budget_does_not_share_input_container_and_is_frozen() -> None:
