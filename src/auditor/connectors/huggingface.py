@@ -127,10 +127,13 @@ class HFConnector(Connector):
             "(can_random_access=False)"
         )
 
+    def get_revision(self) -> str:
+        return self._revision
+
     def get_source_metadata(self) -> dict[str, Any]:
         return {
             "source_uri": (f"https://huggingface.co/datasets/{self._dataset_id}"),
-            "revision": self._revision,
+            "revision": self.get_revision(),
             "provider": "huggingface",
             "config_name": self._config_name,
             "split": self._split,

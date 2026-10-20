@@ -309,3 +309,40 @@ def test_hub_metadata_call_retries_transient_connection_failure(
 
     assert connector.get_source_metadata()["revision"] == PINNED_SHA
     assert api.calls == 2
+
+
+def test_5_5_hf_metadata_revision_matches_get_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_hf_fakes(monkeypatch, FakeStreamingDataset(iter(ROWS)))
+    connector = HFConnector("acme/example", revision="main")
+    assert connector.get_revision() == PINNED_SHA
+    assert connector.get_source_metadata()["revision"] == connector.get_revision()
+
+
+def test_5_5_hf_metadata_delegates_revision(monkeypatch: pytest.MonkeyPatch) -> None:
+    _install_hf_fakes(monkeypatch, FakeStreamingDataset(iter(ROWS)))
+    connector = HFConnector("acme/example", revision="main")
+    sentinel = "hf:delegated-revision"
+    monkeypatch.setattr(connector, "get_revision", lambda: sentinel)
+    assert connector.get_source_metadata()["revision"] == sentinel
+
+
+def test_5_5_hf_revision_is_resolved_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    api = FakeHfApi()
+    original_dataset_info = api.dataset_info
+    later_sha = "f" * 40
+    assert later_sha != PINNED_SHA
+
+    def moving_dataset_info(repo_id: str, **kwargs: Any) -> Any:
+        info = original_dataset_info(repo_id, **kwargs)
+        info.sha = PINNED_SHA if api.calls == 1 else later_sha
+        return info
+
+    monkeypatch.setattr(api, "dataset_info", moving_dataset_info)
+    _install_hf_fakes(monkeypatch, FakeStreamingDataset(iter(ROWS)), api=api)
+    connector = HFConnector("acme/example", revision="main")
+    for _ in range(3):
+        assert connector.get_revision() == PINNED_SHA
+        assert connector.get_source_metadata()["revision"] == PINNED_SHA
+    assert api.calls == 1

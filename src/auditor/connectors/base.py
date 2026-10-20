@@ -70,3 +70,7 @@ class Connector(ABC):
         Expected keys include source_uri, revision (when pinnable), and
         provider.
         """
+
+    @abstractmethod
+    def get_revision(self) -> str:
+        """Return the source revision pinned for this connector instance's lifetime."""

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Iterator
 from typing import Any
 
@@ -236,3 +237,131 @@ def test_get_record_missing_id_raises_key_error() -> None:
     )
     with pytest.raises(KeyError):
         connector.get_record("missing")
+
+
+def test_5_5_connector_requires_get_revision() -> None:
+    class MissingRevisionConnector(Connector):
+        def get_capabilities(self) -> CapabilityDescriptor:
+            return _default_capabilities(estimated_record_count=0)
+
+        def get_schema(self) -> dict[str, Any]:
+            return {}
+
+        def list_records(self, limit: int | None = None) -> Iterator[dict[str, Any]]:
+            return iter(())
+
+        def get_record(self, record_id: str) -> dict[str, Any]:
+            raise KeyError(record_id)
+
+        def get_source_metadata(self) -> dict[str, Any]:
+            return {"source_uri": "memory://abstract-test", "revision": "fake:abc:v1"}
+
+    with pytest.raises(TypeError) as exc_info:
+        MissingRevisionConnector()
+    message = str(exc_info.value).lower()
+    assert "get_revision" in message
+    assert "abstract" in message
+
+
+def test_5_5_in_memory_revision_parameter_is_keyword_only() -> None:
+    parameters = inspect.signature(InMemoryConnector.__init__).parameters
+    assert "revision" in parameters
+    assert parameters["revision"].kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameters["revision"].default is None
+
+
+def test_5_5_in_memory_explicit_revision() -> None:
+    metadata = {"source_uri": "memory://explicit", "provider": "in_memory"}
+    connector = InMemoryConnector(
+        records=[],
+        schema={},
+        source_metadata=metadata,
+        capabilities=_default_capabilities(),
+        revision="fake:explicit:v1",
+    )
+    assert connector.get_revision() == "fake:explicit:v1"
+    actual = connector.get_source_metadata()
+    assert actual["revision"] == "fake:explicit:v1"
+    assert actual["source_uri"] == metadata["source_uri"]
+    assert actual["provider"] == metadata["provider"]
+
+
+def test_5_5_in_memory_uses_metadata_revision() -> None:
+    connector = InMemoryConnector(
+        records=[],
+        schema={},
+        source_metadata={"revision": "fake:metadata:v1"},
+        capabilities=_default_capabilities(),
+    )
+    assert connector.get_revision() == "fake:metadata:v1"
+    assert connector.get_source_metadata()["revision"] == "fake:metadata:v1"
+
+
+def test_5_5_in_memory_uses_fixed_fake_revision() -> None:
+    connector = InMemoryConnector(
+        records=[],
+        schema={},
+        source_metadata={},
+        capabilities=_default_capabilities(),
+    )
+    assert connector.get_revision() == "fake:in-memory:v1"
+    assert connector.get_source_metadata()["revision"] == "fake:in-memory:v1"
+
+
+def test_5_5_in_memory_accepts_matching_revision_inputs() -> None:
+    revision = "fake:matching:v1"
+    connector = InMemoryConnector(
+        records=[],
+        schema={},
+        source_metadata={"revision": revision},
+        capabilities=_default_capabilities(),
+        revision=revision,
+    )
+    assert connector.get_revision() == revision
+    assert connector.get_source_metadata()["revision"] == revision
+
+
+def test_5_5_in_memory_rejects_conflicting_revision_inputs() -> None:
+    explicit_revision = "fake:explicit-conflict:v1"
+    metadata_revision = "fake:metadata-conflict:v2"
+    with pytest.raises(ValueError) as exc_info:
+        InMemoryConnector(
+            records=[],
+            schema={},
+            source_metadata={"revision": metadata_revision},
+            capabilities=_default_capabilities(),
+            revision=explicit_revision,
+        )
+    message = str(exc_info.value)
+    assert "revision" in message.lower()
+    assert "conflict" in message.lower()
+    assert explicit_revision in message
+    assert metadata_revision in message
+
+
+def test_5_5_in_memory_revision_is_captured_at_construction() -> None:
+    original_revision = "fake:captured:v1"
+    metadata = {"revision": original_revision}
+    connector = InMemoryConnector(
+        records=[],
+        schema={},
+        source_metadata=metadata,
+        capabilities=_default_capabilities(),
+    )
+    metadata["revision"] = "fake:changed:v2"
+    assert connector.get_revision() == original_revision
+    assert connector.get_source_metadata()["revision"] == original_revision
+
+
+def test_5_5_in_memory_metadata_delegates_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connector = InMemoryConnector(
+        records=[],
+        schema={},
+        source_metadata={"revision": "fake:original:v1"},
+        capabilities=_default_capabilities(),
+    )
+    sentinel = "fake:delegated:v2"
+    monkeypatch.setattr(connector, "get_revision", lambda: sentinel)
+    assert connector.get_source_metadata()["revision"] == sentinel

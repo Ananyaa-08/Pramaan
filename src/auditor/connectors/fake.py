@@ -26,7 +26,28 @@ class InMemoryConnector(Connector):
         source_metadata: dict[str, Any],
         capabilities: CapabilityDescriptor,
         id_field: str = "id",
+        *,
+        revision: str | None = None,
     ) -> None:
+        metadata_revision = source_metadata.get("revision")
+        if (
+            revision is not None
+            and metadata_revision is not None
+            and revision != metadata_revision
+        ):
+            raise ValueError(
+                f"Revision conflict: explicit {revision!r} and metadata "
+                f"{metadata_revision!r}"
+            )
+        self._revision = (
+            revision
+            if revision is not None
+            else (
+                metadata_revision
+                if metadata_revision is not None
+                else "fake:in-memory:v1"
+            )
+        )
         # Materialize once so generator sources remain independently replayable.
         self._records = tuple(records)
         self._schema = schema
@@ -60,4 +81,7 @@ class InMemoryConnector(Connector):
         raise KeyError(record_id)
 
     def get_source_metadata(self) -> dict[str, Any]:
-        return self._source_metadata
+        return {**self._source_metadata, "revision": self.get_revision()}
+
+    def get_revision(self) -> str:
+        return self._revision

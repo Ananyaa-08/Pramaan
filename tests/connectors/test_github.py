@@ -392,3 +392,44 @@ def test_docs_only_tree_sets_referenced_not_present_without_url_fallback(
     caps = connector.get_capabilities()
 
     assert caps.media_is_referenced_not_present is True
+
+
+def test_5_5_github_metadata_revision_matches_get_revision() -> None:
+    connector = GitHubConnector(
+        "acme/dataset", ref="main", client=FakeGitHubClient(tree=PRESENT_TREE)
+    )
+    assert connector.get_revision() == PINNED_SHA
+    assert connector.get_source_metadata()["revision"] == connector.get_revision()
+
+
+def test_5_5_github_metadata_delegates_revision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connector = GitHubConnector(
+        "acme/dataset", ref="main", client=FakeGitHubClient(tree=PRESENT_TREE)
+    )
+    sentinel = "github:delegated-revision"
+    monkeypatch.setattr(connector, "get_revision", lambda: sentinel)
+    assert connector.get_source_metadata()["revision"] == sentinel
+
+
+def test_5_5_github_revision_is_resolved_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeGitHubClient(tree=PRESENT_TREE)
+    original_get = client.get
+    commit_requests: list[str] = []
+    later_sha = "f" * 40
+    assert later_sha != PINNED_SHA
+
+    def moving_get(url: str, **kwargs: Any) -> FakeResponse:
+        if "/repos/acme/dataset/commits/" in url:
+            commit_requests.append(url)
+            sha = PINNED_SHA if len(commit_requests) == 1 else later_sha
+            return FakeResponse({"sha": sha})
+        return original_get(url, **kwargs)
+
+    monkeypatch.setattr(client, "get", moving_get)
+    connector = GitHubConnector("acme/dataset", ref="main", client=client)
+    for _ in range(3):
+        assert connector.get_revision() == PINNED_SHA
+        assert connector.get_source_metadata()["revision"] == PINNED_SHA
+    assert len(commit_requests) == 1

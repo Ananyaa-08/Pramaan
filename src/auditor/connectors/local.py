@@ -58,6 +58,7 @@ class LocalFilesConnector(Connector):
         self._estimated_count = self._compute_record_count()
         if self._estimated_count == 0:
             raise EmptySourceError(f"source is empty: {self._path}")
+        self._revision = f"sha256:{self._content_hash()}"
 
     # ------------------------------------------------------------------
     # Connector API
@@ -116,12 +117,15 @@ class LocalFilesConnector(Connector):
                 return record
         raise RecordNotFoundError(record_id)
 
+    def get_revision(self) -> str:
+        return self._revision
+
     def get_source_metadata(self) -> dict[str, Any]:
         stat = self._path.stat()
-        content_hash = self._content_hash()
         return {
             "source_uri": str(self._path),
-            "revision": f"mtime:{stat.st_mtime_ns}:sha256:{content_hash}",
+            "revision": self.get_revision(),
+            "mtime_ns": stat.st_mtime_ns,
             "provider": "local_files",
             "format": self._format,
         }

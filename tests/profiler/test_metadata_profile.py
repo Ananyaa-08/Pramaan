@@ -230,6 +230,9 @@ class CountingMetadataConnector(Connector):
         self.source_metadata_calls += 1
         return self._source_metadata
 
+    def get_revision(self) -> str:
+        return self._source_metadata["revision"]
+
 
 @pytest.fixture
 def store(tmp_path: Path) -> EvidenceStore:

@@ -225,11 +225,14 @@ class GitHubConnector(Connector):
     def get_source_metadata(self) -> dict[str, Any]:
         return {
             "source_uri": self._source_uri,
-            "revision": self._revision,
+            "revision": self.get_revision(),
             "provider": "github",
             "requested_ref": self._requested_ref,
             "authenticated": self._token is not None,
         }
+
+    def get_revision(self) -> str:
+        return self._revision
 
     def _iter_repository_records(self) -> Iterator[dict[str, Any]]:
         yield from self._records

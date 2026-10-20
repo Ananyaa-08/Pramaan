@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
+import re
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -266,3 +269,88 @@ def test_explicit_format_override(tmp_path: Path) -> None:
     conn = LocalFilesConnector(path, format="csv")
     assert conn.get_capabilities().estimated_record_count == 2
     assert list(conn.list_records())[0]["id"] == "r1"
+
+
+def test_5_5_local_metadata_revision_matches_get_revision(csv_path: Path) -> None:
+    connector = LocalFilesConnector(csv_path)
+    assert connector.get_source_metadata()["revision"] == connector.get_revision()
+
+
+def test_5_5_local_metadata_delegates_revision(
+    csv_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    connector = LocalFilesConnector(csv_path)
+    sentinel = "sha256:delegated-local-revision"
+    monkeypatch.setattr(connector, "get_revision", lambda: sentinel)
+    assert connector.get_source_metadata()["revision"] == sentinel
+
+
+def test_5_5_local_revision_has_exact_content_hash_format(tmp_path: Path) -> None:
+    content = b"id,label\nr1,alpha\nr2,beta\n"
+    path = tmp_path / "content.csv"
+    path.write_bytes(content)
+    expected = "sha256:" + hashlib.sha256(content).hexdigest()
+    revision = LocalFilesConnector(path).get_revision()
+    assert revision == expected
+    assert re.fullmatch(r"sha256:[0-9a-f]{64}", revision) is not None
+
+
+def test_5_5_local_revision_ignores_mtime_changes(csv_path: Path) -> None:
+    first = LocalFilesConnector(csv_path)
+    original_revision = first.get_source_metadata()["revision"]
+    original_bytes = csv_path.read_bytes()
+    original_stat = os.stat(csv_path)
+    os.utime(
+        csv_path,
+        ns=(original_stat.st_atime_ns, original_stat.st_mtime_ns + 10_000_000_000),
+    )
+    assert os.stat(csv_path).st_mtime_ns != original_stat.st_mtime_ns
+    assert csv_path.read_bytes() == original_bytes
+    second = LocalFilesConnector(csv_path)
+    assert second.get_source_metadata()["revision"] == original_revision
+
+
+def test_5_5_local_metadata_exposes_mtime_ns(csv_path: Path) -> None:
+    connector = LocalFilesConnector(csv_path)
+    metadata = connector.get_source_metadata()
+    stat = os.stat(csv_path)
+    assert "mtime_ns" in metadata
+    assert type(metadata["mtime_ns"]) is int
+    assert metadata["mtime_ns"] == stat.st_mtime_ns
+
+
+def test_5_5_local_revision_is_computed_once(
+    csv_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    expected = "sha256:" + hashlib.sha256(csv_path.read_bytes()).hexdigest()
+    original_sha256 = hashlib.sha256
+    hash_calls = 0
+
+    def counting_sha256(*args: Any, **kwargs: Any) -> Any:
+        nonlocal hash_calls
+        hash_calls += 1
+        return original_sha256(*args, **kwargs)
+
+    monkeypatch.setattr("auditor.connectors.local.hashlib.sha256", counting_sha256)
+    connector = LocalFilesConnector(csv_path)
+    for _ in range(3):
+        assert connector.get_revision() == expected
+        assert connector.get_source_metadata()["revision"] == expected
+    assert hash_calls == 1
+
+
+def test_5_5_local_revision_is_pinned_for_instance_lifetime(tmp_path: Path) -> None:
+    path = tmp_path / "pinned.csv"
+    content_a = b"id,label\nr1,alpha\n"
+    content_b = b"id,label\nr1,beta\nr2,gamma\n"
+    path.write_bytes(content_a)
+    first = LocalFilesConnector(path)
+    original_revision = first.get_source_metadata()["revision"]
+    path.write_bytes(content_b)
+    assert first.get_revision() == original_revision
+    assert first.get_source_metadata()["revision"] == original_revision
+    second = LocalFilesConnector(path)
+    expected_b = "sha256:" + hashlib.sha256(content_b).hexdigest()
+    assert second.get_revision() == expected_b
+    assert second.get_source_metadata()["revision"] == expected_b
+    assert second.get_revision() != original_revision
