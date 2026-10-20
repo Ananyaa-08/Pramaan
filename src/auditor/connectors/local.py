@@ -87,7 +87,9 @@ class LocalFilesConnector(Connector):
             sample.append(row)
             if i + 1 >= _SCHEMA_SAMPLE_ROWS:
                 break
-        columns = _infer_types_from_sample(sample)
+        columns = _infer_types_from_sample(
+            sample, infer_numeric_strings=self._format == "csv"
+        )
         return {
             "columns": columns,
             "_inference": "sample_head",
@@ -271,7 +273,9 @@ def _normalize_csv_value(value: str | None) -> Any:
     return value
 
 
-def _infer_types_from_sample(sample: list[dict[str, Any]]) -> dict[str, str]:
+def _infer_types_from_sample(
+    sample: list[dict[str, Any]], *, infer_numeric_strings: bool
+) -> dict[str, str]:
     if not sample:
         return {}
     columns: dict[str, str] = {}
@@ -279,11 +283,14 @@ def _infer_types_from_sample(sample: list[dict[str, Any]]) -> dict[str, str]:
     for row in sample:
         keys.update(row.keys())
     for key in sorted(keys):
-        columns[key] = _infer_column_type([row.get(key) for row in sample])
+        columns[key] = _infer_column_type(
+            [row.get(key) for row in sample],
+            infer_numeric_strings=infer_numeric_strings,
+        )
     return columns
 
 
-def _infer_column_type(values: list[Any]) -> str:
+def _infer_column_type(values: list[Any], *, infer_numeric_strings: bool) -> str:
     non_null = [v for v in values if v is not None]
     if not non_null:
         return "null"
@@ -293,12 +300,13 @@ def _infer_column_type(values: list[Any]) -> str:
         return "int"
     if all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in non_null):
         return "float"
-    # CSV values arrive as strings — try numeric parse honesty.
     if all(isinstance(v, str) for v in non_null):
-        if _all_int_strings(non_null):
-            return "int"
-        if _all_float_strings(non_null):
-            return "float"
+        # Only CSV strings need numeric inference; JSON strings keep their type.
+        if infer_numeric_strings:
+            if _all_int_strings(non_null):
+                return "int"
+            if _all_float_strings(non_null):
+                return "float"
         return "str"
     return "mixed"
 

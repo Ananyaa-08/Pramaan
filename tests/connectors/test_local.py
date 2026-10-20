@@ -354,3 +354,241 @@ def test_5_5_local_revision_is_pinned_for_instance_lifetime(tmp_path: Path) -> N
     assert second.get_revision() == expected_b
     assert second.get_source_metadata()["revision"] == expected_b
     assert second.get_revision() != original_revision
+
+
+def _write_schema_records(
+    tmp_path: Path, suffix: str, records: list[dict[str, Any]]
+) -> Path:
+    path = tmp_path / f"schema{suffix}"
+    if suffix == ".json":
+        content = json.dumps(records)
+    else:
+        content = "\n".join(json.dumps(record) for record in records) + "\n"
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
+def _assert_two_row_records_and_schema(
+    path: Path, records: list[dict[str, Any]], columns: dict[str, str]
+) -> None:
+    connector = LocalFilesConnector(path)
+    assert list(connector.list_records()) == records
+    assert connector.get_schema() == {
+        "columns": columns,
+        "_inference": "sample_head",
+        "_sample_rows": 2,
+    }
+
+
+def _numeric_string_records() -> list[dict[str, Any]]:
+    return [
+        {"integer": "007", "decimal": "1.5", "exponent": "1e3"},
+        {"integer": "12", "decimal": "2.75", "exponent": "2E-2"},
+    ]
+
+
+def _native_scalar_records() -> list[dict[str, Any]]:
+    return [
+        {"integer": 7, "floating": 1.5, "boolean": True, "text": "alpha"},
+        {"integer": 12, "floating": 2.75, "boolean": False, "text": "beta"},
+    ]
+
+
+def _nullable_records() -> list[dict[str, Any]]:
+    return [
+        {"text": "ordinary", "integer": 7, "boolean": False, "empty": None},
+        {"text": None, "integer": None, "boolean": None, "empty": None},
+    ]
+
+
+def _mixed_and_nested_records() -> list[dict[str, Any]]:
+    return [
+        {"mixed": "ordinary", "bool_number": True, "array": [1], "object": {"x": 1}},
+        {"mixed": 2, "bool_number": 1, "array": ["two"], "object": {"x": "two"}},
+    ]
+
+
+def test_6_3_json_numeric_looking_strings_remain_strings(tmp_path: Path) -> None:
+    records = _numeric_string_records()
+    path = _write_schema_records(tmp_path, ".json", records)
+    _assert_two_row_records_and_schema(
+        path, records, {"integer": "str", "decimal": "str", "exponent": "str"}
+    )
+
+
+def test_6_3_jsonl_numeric_looking_strings_remain_strings(tmp_path: Path) -> None:
+    records = _numeric_string_records()
+    path = _write_schema_records(tmp_path, ".jsonl", records)
+    _assert_two_row_records_and_schema(
+        path, records, {"integer": "str", "decimal": "str", "exponent": "str"}
+    )
+
+
+def test_6_3_ndjson_numeric_looking_strings_remain_strings(tmp_path: Path) -> None:
+    records = _numeric_string_records()
+    path = _write_schema_records(tmp_path, ".ndjson", records)
+    _assert_two_row_records_and_schema(
+        path, records, {"integer": "str", "decimal": "str", "exponent": "str"}
+    )
+
+
+def test_6_3_json_native_scalar_types_are_preserved(tmp_path: Path) -> None:
+    records = _native_scalar_records()
+    path = _write_schema_records(tmp_path, ".json", records)
+    _assert_two_row_records_and_schema(
+        path,
+        records,
+        {"integer": "int", "floating": "float", "boolean": "bool", "text": "str"},
+    )
+
+
+def test_6_3_jsonl_native_scalar_types_are_preserved(tmp_path: Path) -> None:
+    records = _native_scalar_records()
+    path = _write_schema_records(tmp_path, ".jsonl", records)
+    _assert_two_row_records_and_schema(
+        path,
+        records,
+        {"integer": "int", "floating": "float", "boolean": "bool", "text": "str"},
+    )
+
+
+def test_6_3_json_integer_float_mixture_is_float(tmp_path: Path) -> None:
+    records = [{"number": 1}, {"number": 1.5}]
+    path = _write_schema_records(tmp_path, ".json", records)
+    _assert_two_row_records_and_schema(path, records, {"number": "float"})
+
+
+def test_6_3_jsonl_integer_float_mixture_is_float(tmp_path: Path) -> None:
+    records = [{"number": 1}, {"number": 1.5}]
+    path = _write_schema_records(tmp_path, ".jsonl", records)
+    _assert_two_row_records_and_schema(path, records, {"number": "float"})
+
+
+def test_6_3_json_nulls_do_not_create_mixed_types(tmp_path: Path) -> None:
+    records = _nullable_records()
+    path = _write_schema_records(tmp_path, ".json", records)
+    _assert_two_row_records_and_schema(
+        path,
+        records,
+        {"text": "str", "integer": "int", "boolean": "bool", "empty": "null"},
+    )
+
+
+def test_6_3_jsonl_nulls_do_not_create_mixed_types(tmp_path: Path) -> None:
+    records = _nullable_records()
+    path = _write_schema_records(tmp_path, ".jsonl", records)
+    _assert_two_row_records_and_schema(
+        path,
+        records,
+        {"text": "str", "integer": "int", "boolean": "bool", "empty": "null"},
+    )
+
+
+def test_6_3_csv_numeric_string_inference_is_unchanged(tmp_path: Path) -> None:
+    path = tmp_path / "schema.csv"
+    path.write_text(
+        "integer,floating,text,boolean,empty\n"
+        "007,1.5,alpha,true,\n"
+        "12,2.75,beta,false,\n",
+        encoding="utf-8",
+    )
+    records = [
+        {
+            "integer": "007",
+            "floating": "1.5",
+            "text": "alpha",
+            "boolean": "true",
+            "empty": None,
+        },
+        {
+            "integer": "12",
+            "floating": "2.75",
+            "text": "beta",
+            "boolean": "false",
+            "empty": None,
+        },
+    ]
+    _assert_two_row_records_and_schema(
+        path,
+        records,
+        {
+            "integer": "int",
+            "floating": "float",
+            "text": "str",
+            "boolean": "str",
+            "empty": "null",
+        },
+    )
+
+
+def test_6_3_json_mixed_and_nested_classification_is_unchanged(tmp_path: Path) -> None:
+    records = _mixed_and_nested_records()
+    path = _write_schema_records(tmp_path, ".json", records)
+    _assert_two_row_records_and_schema(
+        path,
+        records,
+        {"mixed": "mixed", "bool_number": "mixed", "array": "mixed", "object": "mixed"},
+    )
+
+
+def test_6_3_jsonl_mixed_and_nested_classification_is_unchanged(tmp_path: Path) -> None:
+    records = _mixed_and_nested_records()
+    path = _write_schema_records(tmp_path, ".jsonl", records)
+    _assert_two_row_records_and_schema(
+        path,
+        records,
+        {"mixed": "mixed", "bool_number": "mixed", "array": "mixed", "object": "mixed"},
+    )
+
+
+def _assert_real_schema_sample_consumption(
+    connector: LocalFilesConnector,
+    monkeypatch: pytest.MonkeyPatch,
+    read_boundary: str,
+) -> None:
+    original_records = connector._iter_raw_records
+    original_read = getattr(connector, read_boundary)
+    counts = {"iterators": 0, "yielded": 0, "reads": 0}
+
+    def guarded_iterator(actual: Iterator[dict[str, Any]]) -> Iterator[dict[str, Any]]:
+        for record in actual:
+            counts["yielded"] += 1
+            assert counts["yielded"] <= 50, "schema consumed a 51st sample record"
+            yield record
+
+    def counted_records() -> Iterator[dict[str, Any]]:
+        counts["iterators"] += 1
+        assert counts["iterators"] == 1, "schema requested a second raw-record iterator"
+        return guarded_iterator(original_records())
+
+    def counted_read() -> Any:
+        counts["reads"] += 1
+        return original_read()
+
+    monkeypatch.setattr(connector, "_iter_raw_records", counted_records)
+    monkeypatch.setattr(connector, read_boundary, counted_read)
+    schema = connector.get_schema()
+    assert counts == {"iterators": 1, "yielded": 50, "reads": 1}
+    assert schema == {
+        "columns": {"number": "int"},
+        "_inference": "sample_head",
+        "_sample_rows": 50,
+    }
+
+
+def test_6_3_json_schema_sample_consumption_is_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    records = [{"number": number} for number in range(50)] + [{"number": "conflict"}]
+    path = _write_schema_records(tmp_path, ".json", records)
+    connector = LocalFilesConnector(path)
+    _assert_real_schema_sample_consumption(connector, monkeypatch, "_read_text")
+
+
+def test_6_3_jsonl_schema_sample_consumption_is_unchanged(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    records = [{"number": number} for number in range(50)] + [{"number": "conflict"}]
+    path = _write_schema_records(tmp_path, ".jsonl", records)
+    connector = LocalFilesConnector(path)
+    _assert_real_schema_sample_consumption(connector, monkeypatch, "_open_text")
