@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Self
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class EvidenceStatus(StrEnum):
@@ -42,6 +43,16 @@ class Fact(BaseModel):
     parent_fact_ids: list[UUID] = Field(default_factory=list)
     confidence: float | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @field_validator("parent_fact_ids")
+    @classmethod
+    def _validate_parent_fact_ids(cls, parent_ids: list[UUID]) -> list[UUID]:
+        repeated_ids = [pid for pid, count in Counter(parent_ids).items() if count > 1]
+        if repeated_ids:
+            raise ValueError(
+                "Repeated parent IDs: " + ", ".join(map(str, repeated_ids))
+            )
+        return parent_ids
 
     @model_validator(mode="after")
     def _validate_confidence_rule(self) -> Self:

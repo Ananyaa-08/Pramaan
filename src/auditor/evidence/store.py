@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections import Counter
 from datetime import datetime
 from pathlib import Path
 from uuid import UUID
 
-from auditor.evidence.errors import DuplicateFactError
+from auditor.evidence.errors import DuplicateFactError, MissingParentFactError
 from auditor.evidence.models import EvidenceStatus, Fact
 
 
@@ -59,35 +60,55 @@ class EvidenceStore:
     def _insert(self, fact: Fact) -> None:
         _validate_confidence_rule(fact)
 
-        # Existence check before any write — original row must stay untouched.
-        existing = self._conn.execute(
-            "SELECT 1 FROM facts WHERE id = ?",
-            (str(fact.id),),
-        ).fetchone()
-        if existing is not None:
-            raise DuplicateFactError(fact.id)
+        with self._conn:
+            # SELECTs do not start a transaction implicitly.
+            self._conn.execute("BEGIN IMMEDIATE")
+            existing = self._conn.execute(
+                "SELECT 1 FROM facts WHERE id = ?",
+                (str(fact.id),),
+            ).fetchone()
+            if existing is not None:
+                raise DuplicateFactError(fact.id)
 
-        self._conn.execute(
-            """
-            INSERT INTO facts (
-                id, status, claim, value, source, method,
-                run_id, parent_fact_ids, confidence, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                str(fact.id),
-                fact.status.value,
-                fact.claim,
-                json.dumps(fact.value),
-                json.dumps(fact.source),
-                json.dumps(fact.method),
-                str(fact.run_id),
-                json.dumps([str(pid) for pid in fact.parent_fact_ids]),
-                fact.confidence,
-                fact.created_at.isoformat(),
-            ),
-        )
-        self._conn.commit()
+            repeated_ids = [
+                pid for pid, count in Counter(fact.parent_fact_ids).items() if count > 1
+            ]
+            if repeated_ids:
+                raise ValueError(
+                    "Repeated parent IDs: " + ", ".join(map(str, repeated_ids))
+                )
+
+            missing_ids = [
+                pid
+                for pid in fact.parent_fact_ids
+                if self._conn.execute(
+                    "SELECT 1 FROM facts WHERE id = ?", (str(pid),)
+                ).fetchone()
+                is None
+            ]
+            if missing_ids:
+                raise MissingParentFactError(missing_ids)
+
+            self._conn.execute(
+                """
+                INSERT INTO facts (
+                    id, status, claim, value, source, method,
+                    run_id, parent_fact_ids, confidence, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(fact.id),
+                    fact.status.value,
+                    fact.claim,
+                    json.dumps(fact.value),
+                    json.dumps(fact.source),
+                    json.dumps(fact.method),
+                    str(fact.run_id),
+                    json.dumps([str(pid) for pid in fact.parent_fact_ids]),
+                    fact.confidence,
+                    fact.created_at.isoformat(),
+                ),
+            )
 
     def get_by_id(self, fact_id: UUID) -> Fact | None:
         row = self._conn.execute(
